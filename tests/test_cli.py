@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from src.sdc import cli, cliarg
+from msup.cli import cli, cliarg
 
 
 @dataclass

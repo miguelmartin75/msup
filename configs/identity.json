@@ -1,0 +1,12 @@
+{
+  "model_config": {
+    "n_layers": 10,
+    "checkpoint_path": null
+  },
+  "lr": 0.1,
+  "name": "identity",
+  "lr_step_fn": "identity_step_fn",
+  "num_workers": -1,
+  "cont": false,
+  "config_root_dir": "./configs"
+}
