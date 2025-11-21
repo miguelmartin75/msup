@@ -33,7 +33,6 @@ def to_json(x: T, file_like=None, indent: int | None = 2) -> str | None:
     else:
         return json.dumps(to_dict(x), indent=indent)
 
-
 def has_default_value(f):
     return f.default is not MISSING or f.default_factory is not MISSING
 
@@ -111,7 +110,7 @@ def _is_compat(x1: type, x2: type) -> tuple[bool, type | None]:
                 return True, compat_types[0]
         elif xx1 in (dict,):
             return xx2 in (dict,), xx1
-        elif xx1 in (int, float, bool) and xx2 in (int, float, bool):
+        elif xx1 in (int, float, bool, str) and xx2 in (int, float, bool, str):
             return True, xx1
         elif xx1 is Callable2:
             return callable(xx2) or isinstance(xx2, str), xx1
@@ -154,7 +153,7 @@ def _from_value(
             assert not isinstance(x, str)
             return from_dict(field_type, x)
     if x is None or origin in (int, float, str, bool):
-        return x
+        return field_type(x)
     elif is_optional(field_type):
         return _from_value(x, args[0], type(x), field_name=field_name)
     elif origin in (Union, UnionType):

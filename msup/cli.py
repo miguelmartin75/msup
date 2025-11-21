@@ -1,3 +1,4 @@
+import os
 import sys
 import inspect
 import argparse
@@ -10,7 +11,16 @@ from typing import Optional, List, Dict, Union, TypeVar, get_origin, get_args, C
 T = TypeVar('T')
 
 def cli(cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], **argsparse_kwargs): ...
-def cliarg(help: str = "", short: str | list[str] | None = None, **kwargs): ...
+def cliarg(help: str = "", short: str | list[str] | None = None, env: str | None = None, pos: bool = False, opt: bool = True, **kwargs): ...
+
+def strtobool(value: str) -> bool:
+    value = value.lower()
+    if value in ('y', 'yes', 'on', '1', 'true', 't'):
+        return True
+    elif value in ('n', 'no', 'off', '0', 'false', 'f'):
+        return False
+    else:
+        raise ValueError("Invalid truth value %r" % value)
 
 def error_exit(msg: str, code: int = 1):
     print(f"[ERROR]: {msg}", file=sys.stderr)
@@ -34,7 +44,9 @@ def _from_cli_args(clazz: type, args, prefix: str = ""):
     construct_args = {}
     for f in fields(clazz):
         arg_name = prefix + "." + f.name if prefix else f.name
-        value = getattr(args, arg_name)
+        value = getattr(args, arg_name) 
+        if value is None and hasattr(args, arg_name + "_pos"):
+            value = getattr(args, arg_name + "_pos")
         if is_dataclass(f.type):
             if value is not None:
                 if not isinstance(value, str):
@@ -107,15 +119,19 @@ def _get_cli_arg_type(x: type) -> type:
         return str
     return x
 
-def _add_args(parser, cmd_type: type, prefix: str = "", force_no_default: bool = False):
+def to_bool(s: str) -> bool:
+    return bool(strtobool(s))
+
+def _add_args(parser, cmd_type: type, prefix: str = "", pos_arg_config: bool = False, force_no_default: bool = False):
     assert is_dataclass(cmd_type), f"{cmd_type} is not a dataclass"
     if prefix == "":
-        parser.add_argument(
-            "args",
-            nargs="?",
-            type=_get_cli_arg_type(cmd_type),
-            help=f"configuration for {cmd_type.__name__}",
-        )
+        if pos_arg_config:
+            parser.add_argument(
+                "args",
+                nargs="?",
+                type=_get_cli_arg_type(cmd_type),
+                help=f"configuration for {cmd_type.__name__}",
+            )
         parser.add_argument(
             "--Args",
             f"--{cmd_type.__name__}",
@@ -129,78 +145,94 @@ def _add_args(parser, cmd_type: type, prefix: str = "", force_no_default: bool =
         field_name = f.name
         name = prefix + "." + field_name if prefix else field_name
         req = prefix == "" and not has_default_value(f)
-        args = []
-        if f.metadata.get("short"):
-            for s in f.metadata["short"]:
-                if s is not None:
-                    assert not s.startswith("--")
-                    args.append("-" + s if not s.startswith("-") else s)
-        args.append("--" + name)
-
         o_or_field_type = get_origin(f.type) or f.type
         default_value = f.default if f.default is not MISSING and not force_no_default else None
         default_help = f"Default: {default_value}" if default_value else ""
+        env_name = f.metadata.get("env")
+        env_value = os.getenv(env_name) if env_name else None
+        if env_value:
+            default_value = _from_value(env_value, f.type, str, field_name)
+            default_help = f"Default (using env: ${{{env_name}}}): {default_value}"
+
         help = f.metadata.get("help") + ". " + default_help if f.metadata.get("help") else default_help
+        args_to_add = []
 
-        if is_dataclass(f.type):
-            parser.add_argument(
-                *args,
-                type=_get_cli_arg_type(f.type),
-                help=help,
-                required=False,
-            )
-            _add_args(
-                parser,
-                f.type,
-                prefix=field_name,
-                force_no_default=True,
-            )
-        elif get_origin(f.type) in (list,):
-            parser.add_argument(
-                *args,
-                type=_get_cli_arg_type(f.type),
-                help=help,
-                nargs='+',
-                required=False,
-                default=default_value,
-            )
-        elif o_or_field_type in (dict,):
-            parser.add_argument(
-                *args,
-                type=str,
-                help=help,
-                required=req,
-                default=default_value,
-            )
-        elif f.type in (bool,):
-            parser.add_argument(
-                *args,
-                type=str,
-                help=help,
-                required=req,
-                default=default_value,
-            )
-        elif get_origin(f.type) is Callable2:
-            parser.add_argument(
-                *args,
-                type=str,
-                help=help,
-                required=req,
-                default=default_value,
-            )
-        else:
-            parser.add_argument(
-                *args,
-                type=_get_cli_arg_type(f.type),
-                help=help,
-                required=req,
-                default=default_value,
-            )
+        if f.metadata.get("pos"):
+            args_to_add.append(([name + "_pos"], {"nargs": "?"}))
 
-def cliarg(help: str = "", short: str | list[str] | None = None, **kwargs):
-    return field(metadata={"help": help, "short": short if isinstance(short, list) else [short]}, **kwargs)
+        if f.metadata.get("opt"):
+            args = []
+            if f.metadata.get("short"):
+                for s in f.metadata["short"]:
+                    if s is not None:
+                        assert not s.startswith("--")
+                        args.append("-" + s if not s.startswith("-") else s)
+            args.append("--" + name)
+            args_to_add.append((args, {"required": req if not f.metadata.get("pos") else False, "dest": name}))
 
-def cli(cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], **argsparse_kwargs):
+        for i, (args, kwargs) in enumerate(args_to_add):
+            if is_dataclass(f.type):
+                parser.add_argument(
+                    *args,
+                    **kwargs,
+                    type=_get_cli_arg_type(f.type),
+                    help=help,
+                )
+                _add_args(
+                    parser,
+                    f.type,
+                    prefix=field_name,
+                    force_no_default=True,
+                )
+            elif get_origin(f.type) in (list,):
+                kwargs["nargs"] = "*"
+                parser.add_argument(
+                    *args,
+                    **kwargs,
+                    type=_get_cli_arg_type(f.type),
+                    help=help,
+                    default=default_value,
+                )
+            elif o_or_field_type in (dict,):
+                parser.add_argument(
+                    *args,
+                    **kwargs,
+                    type=str,
+                    help=help,
+                    default=default_value,
+                )
+            elif f.type in (bool,):
+                if "nargs" not in kwargs:
+                    kwargs["nargs"] = "?"
+                parser.add_argument(
+                    *args,
+                    **kwargs,
+                    const=not default_value,
+                    type=to_bool,
+                    metavar="{0|1,true|false,yes|no}",
+                    default=default_value,
+                )
+            elif get_origin(f.type) is Callable2:
+                parser.add_argument(
+                    *args,
+                    **kwargs,
+                    type=str,
+                    help=help,
+                    default=default_value,
+                )
+            else:
+                parser.add_argument(
+                    *args,
+                    **kwargs,
+                    type=_get_cli_arg_type(f.type),
+                    help=help,
+                    default=default_value,
+                )
+
+def cliarg(help: str = "", short: str | list[str] | None = None, env: str | None = None, pos: bool = False, opt: bool = True, **kwargs):
+    return field(metadata={"help": help, "short": short if isinstance(short, list) else [short], "env": env, "pos": pos, "opt": opt}, **kwargs)
+
+def cli(cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], pos_arg_config: bool = False, **argsparse_kwargs):
     parser = argparse.ArgumentParser(**argsparse_kwargs)
     if isinstance(cmd_or_cmds, dict):
         seen = set()
@@ -218,7 +250,7 @@ def cli(cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], **argsp
                 help=desc,
             )
             p.set_defaults(func=cmd_fn, cmd_type=cmd_type)
-            _add_args(p, cmd_type)
+            _add_args(p, cmd_type, pos_arg_config=pos_arg_config)
 
         args = parser.parse_args()
         if hasattr(args, 'func'):
@@ -226,7 +258,7 @@ def cli(cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], **argsp
         else:
             parser.print_help()
     else:
-        _add_args(parser, _get_first_arg(cmd_or_cmds))
+        _add_args(parser, _get_first_arg(cmd_or_cmds), pos_arg_config=pos_arg_config)
         args = parser.parse_args()
         cmd_or_cmds(_from_cli_args(_get_first_arg(cmd_or_cmds), args))
 
