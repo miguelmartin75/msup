@@ -73,7 +73,7 @@ def _from_cli_args(clazz: type, args, prefix: str = ""):
                 sub = _from_cli_args(f.type, args, prefix=f.name)
 
             construct_args[f.name] = sub
-        elif f.type is dict:
+        elif get_origin(f.type) is dict or f.type is dict:
             if not isinstance(value, str):
                 error_exit(f"expected string for --{arg_name}, got {type(value)} ({value=})", 2)
             sub = _from_value(
@@ -82,6 +82,7 @@ def _from_cli_args(clazz: type, args, prefix: str = ""):
                 str,
                 f.name,
             )
+            construct_args[f.name] = sub
         elif f.type is bool:
             if isinstance(value, bool):
                 construct_args[f.name] = value

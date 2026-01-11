@@ -44,6 +44,9 @@ def load_callable(name: str):
     mod = importlib.import_module(module_name)
     return getattr(mod, fn_name)
 
+def maybe_idx(xs: list, idx: int, default: any = None) -> int:
+    return xs[idx] if idx < len(xs) else default
+
 def _to_dict_value(x: T, field_type: type):
     t = type(x)
     if is_optional(field_type):
@@ -67,10 +70,7 @@ def _to_dict_value(x: T, field_type: type):
             pass
         breakpoint()
     elif field_type:
-        try:
-            return field_type(x)
-        except:
-            breakpoint()
+        return field_type(x)
     else:
         return x
 
@@ -109,13 +109,28 @@ def _is_compat(x1: type, x2: type) -> tuple[bool, type | None]:
             else:
                 return True, compat_types[0]
         elif xx1 in (dict,):
-            return xx2 in (dict,), xx1
+            return xx2 in (dict, str,), xx1
         elif xx1 in (int, float, bool, str) and xx2 in (int, float, bool, str):
             return True, xx1
         elif xx1 is Callable2:
             return callable(xx2) or isinstance(xx2, str), xx1
         else:
             return xx1 == xx2, xx1
+
+def dict_from_str(x: str) -> dict:
+    assert isinstance(x, str)
+    if x.startswith("{"):
+        value = json.loads(x)
+        return value
+    elif x.endswith(".json"):
+        assert os.path.exists(x), f"{x} does not exist"
+        with open(x) as in_f:
+            value = json.load(in_f)
+        # TODO: support YAML
+        # elif x.endswith(".yaml"):
+        return value
+    else:
+        raise AssertionError(f"unexpected str: {x}")
 
 def _from_value(
     x: T,
@@ -135,20 +150,7 @@ def _from_value(
         if concrete_type == field_type:
             return x
         elif concrete_type == str:
-            assert isinstance(x, str)
-            if x.startswith("{"):
-                json_value = json.loads(x)
-                return from_dict(field_type, json_value)
-            elif x.endswith(".json"):
-                assert os.path.exists(x), f"{x} does not exist"
-                with open(x) as in_f:
-                    json_value = json.load(in_f)
-                    value = from_dict(field_type, json_value)
-                    return value
-            # TODO: support YAML
-            # elif x.endswith(".yaml"):
-            else:
-                return eval(value)
+            return from_dict(field_type, dict_from_str(x))
         else:
             assert not isinstance(x, str)
             return from_dict(field_type, x)
@@ -159,13 +161,22 @@ def _from_value(
     elif origin in (Union, UnionType):
         return _from_value(x, compat_type, concrete_type, field_name=field_name)
     elif origin in (dict,):
+        if concrete_type == str:
+            x = dict_from_str(x)
+
         return {
             _from_value(
                 k,
-                type(k),
+                maybe_idx(get_args(field_type), 0, type(k)),
                 type(k),
                 field_name=f"{field_name}.key",
-            ): _from_value(v, type(v), type(v), field_name=f"{field_name}.value")
+            ): 
+            _from_value(
+                v, 
+                maybe_idx(get_args(field_type), 1, type(v)),
+                type(v),
+                field_name=f"{field_name}.value",
+            )
             for k, v in x.items()
         }
     elif origin in (list, List,):
