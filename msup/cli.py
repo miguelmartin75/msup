@@ -74,6 +74,10 @@ def _from_cli_args(clazz: type, args, prefix: str = ""):
 
             construct_args[f.name] = sub
         elif get_origin(f.type) is dict or f.type is dict:
+            if value is None:
+                if has_default_value(f):
+                    continue
+                error_exit(f"--{arg_name} not provided (default value DNE)", 3)
             if not isinstance(value, str):
                 error_exit(f"expected string for --{arg_name}, got {type(value)} ({value=})", 2)
             sub = _from_value(
