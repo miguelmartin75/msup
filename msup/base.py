@@ -5,7 +5,7 @@ import importlib
 from dataclasses import dataclass, asdict, is_dataclass, fields, MISSING, field
 from collections.abc import Callable as Callable2
 from types import UnionType
-from typing import Optional, List, Dict, Union, TypeVar, get_origin, get_args, Callable, get_type_hints, Any
+from typing import Optional, List, Tuple, Dict, Union, TypeVar, get_origin, get_args, Callable, get_type_hints, Any
 
 T = TypeVar('T')
 
@@ -55,8 +55,8 @@ def _to_dict_value(x: T, field_type: type):
         return _to_dict_value(x, get_args(field_type)[0])
     elif t in (dict,):
         return {_to_dict_value(k, get_args(field_type)[0] or type(k)): _to_dict_value(v, get_args(field_type)[1] or type(v)) for k, v in x.items()}
-    elif t in (list, List):
-        return [_to_dict_value(xx, get_args(field_type)[0] or type(xx)) for xx in x]
+    elif t in (tuple, Tuple, list, List):
+        return t([_to_dict_value(xx, get_args(field_type)[0] or type(xx)) for xx in x])
     elif is_dataclass(t):
         return to_dict(x)
     elif get_origin(field_type) is Callable2:
@@ -179,11 +179,11 @@ def _from_value(
             )
             for k, v in x.items()
         }
-    elif origin in (list, List,):
-        return [
+    elif origin in (tuple, Tuple, list, List,):
+        return origin([
             _from_value(xx, type(xx), type(xx), field_name=f"{field_type}[{i}]")
             for i, xx in enumerate(x)
-        ]
+        ])
     elif origin is Callable2:
         if isinstance(x, str):
             return load_callable(x)

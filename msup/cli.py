@@ -44,7 +44,7 @@ def _from_cli_args(clazz: type, args, prefix: str = ""):
     construct_args = {}
     for f in fields(clazz):
         arg_name = prefix + "." + f.name if prefix else f.name
-        value = getattr(args, arg_name) 
+        value = getattr(args, arg_name, None) 
         if value is None and hasattr(args, arg_name + "_pos"):
             value = getattr(args, arg_name + "_pos")
         if is_dataclass(f.type):
@@ -127,7 +127,7 @@ def _get_cli_arg_type(x: type) -> type:
 def to_bool(s: str) -> bool:
     return bool(strtobool(s))
 
-def _add_args(parser, cmd_type: type, prefix: str = "", pos_arg_config: bool = False, force_no_default: bool = False):
+def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None = None, pos_arg_config: bool = False, force_no_default: bool = False):
     assert is_dataclass(cmd_type), f"{cmd_type} is not a dataclass"
     if prefix == "":
         if pos_arg_config:
@@ -165,13 +165,17 @@ def _add_args(parser, cmd_type: type, prefix: str = "", pos_arg_config: bool = F
         if f.metadata.get("pos"):
             args_to_add.append(([name + "_pos"], {"nargs": "?"}))
 
-        if f.metadata.get("opt"):
+        if f.metadata.get("opt") or len(args_to_add) == 0:
             args = []
             if f.metadata.get("short"):
                 for s in f.metadata["short"]:
                     if s is not None:
                         assert not s.startswith("--")
-                        args.append("-" + s if not s.startswith("-") else s)
+                        arg_name = "-" + s if not s.startswith("-") else s
+                        prefix_to_use = short_prefix if short_prefix is not None else prefix
+                        arg_name = "-" + prefix_to_use + "." + arg_name[1:] if prefix_to_use else arg_name
+                        if arg_name != "-":
+                            args.append(arg_name)
             args.append("--" + name)
             args_to_add.append((args, {"required": req if not f.metadata.get("pos") else False, "dest": name}))
 
@@ -187,6 +191,7 @@ def _add_args(parser, cmd_type: type, prefix: str = "", pos_arg_config: bool = F
                     parser,
                     f.type,
                     prefix=field_name,
+                    short_prefix=f.metadata.get("short", [None])[0],
                     force_no_default=True,
                 )
             elif get_origin(f.type) in (list,):

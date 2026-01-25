@@ -11,7 +11,7 @@ class ModelConfig:
 def cosine_warmup_lr_step(i: int, base_lr: float): ...
 @dataclass
 class TrainArgs:
-    model_config: ModelConfig = cliarg(default_factory=lambda: ModelConfig)
+    model_config: ModelConfig = cliarg(short="", default_factory=lambda: ModelConfig)
     lr: float = 0.01
     name: str = cliarg(help="name of experiment", default="example")
     lr_step_fn: Callable[[int, float], float] = cliarg(help="", default=cosine_warmup_lr_step)
@@ -21,7 +21,7 @@ class TrainArgs:
 
 @dataclass
 class EvalArgs:
-    model_config: ModelConfig = cliarg(default_factory=lambda: ModelConfig)
+    model_config: ModelConfig = cliarg(short="", default_factory=lambda: ModelConfig)
     num_workers: int = -1
     # ...
 

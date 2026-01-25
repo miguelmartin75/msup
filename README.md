@@ -17,7 +17,6 @@ Serialization/de-serialization of dataclasses supports:
   - JSON, e.g. `'{"x": 3, "name": "abc"}'`
   - a file to JSON or yaml, e.g. `myfile.json` or `myfile.yaml`
 - Features that are TODOs:
-    - [ ] tuples
     - [ ] enum
     - [ ] renaming fields
 
@@ -107,7 +106,7 @@ python examples/multicli.py train configs/identity.json
 python examples/multicli.py train --Args configs/identity.json --lr 0.2
 ```
 
-You can also read in nested dataclasses from a file (JSON), a JSON string, or python code directly from the CLI, e.g.
+You can also read in nested dataclasses from a file (e.g. JSON), or a string representing the encoded format (e.g. JSON), from the CLI, e.g.
 ```bash
 python examples/multicli.py train --model_config configs/models/small.json
 
