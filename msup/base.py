@@ -9,6 +9,7 @@ from typing import Optional, List, Tuple, Dict, Union, TypeVar, get_origin, get_
 
 T = TypeVar('T')
 
+def to_kwargs(x: T) -> dict: ...
 def from_dict(clazz: type, x: dict) -> T: ...
 def to_dict(x: T) -> dict: ...
 def from_json(clazz: type, s: str | None = None, file_like=None, path: str | None = None) -> T:
@@ -66,9 +67,15 @@ def _to_dict_value(x: T, field_type: type):
             assert isinstance(x, str), f"{x.__class__=}"
             return x
     elif get_origin(field_type) in (Union, UnionType):
+        result = []
         for arg in get_args(field_type):
-            pass
-        breakpoint()
+            try:
+                result.append(_to_dict_value(x, arg))
+            except Exception:
+                continue
+        if len(result) > 0:
+            raise ValueError(f"multiple possible values for union type: {field_type}")
+        return result[0]
     elif field_type:
         return field_type(x)
     else:
@@ -78,6 +85,12 @@ def to_dict(x: T) -> dict:
     result = {}
     for f in fields(x):
         result[f.name] = _to_dict_value(x.__dict__[f.name], f.type)
+    return result
+
+def to_kwargs(x: T) -> dict:
+    result = {}
+    for f in fields(x):
+        result[f.name] = x.__dict__[f.name]
     return result
 
 def is_optional(x: type) -> bool:
@@ -126,8 +139,6 @@ def dict_from_str(x: str) -> dict:
         assert os.path.exists(x), f"{x} does not exist"
         with open(x) as in_f:
             value = json.load(in_f)
-        # TODO: support YAML
-        # elif x.endswith(".yaml"):
         return value
     else:
         raise AssertionError(f"unexpected str: {x}")

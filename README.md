@@ -10,7 +10,7 @@ Serialization/de-serialization of dataclasses supports:
 - validating types
 - basic primitives: float, str, int,
 - optionals
-- unions if there is no ambiguty in type-checking
+- unions if there is no ambiguity
 - nested dataclasses
 - callables defined as a string
 - sub-objects can be loaded from a string representing a:
@@ -22,8 +22,8 @@ Serialization/de-serialization of dataclasses supports:
 
 This library is designed with the following design philosophies:
 - simplicity
-- minimalism (small LOC)
-- no dependencies by default (opt-in dependencies)
+- minimal LOC
+- no dependencies by default, i.e. dependencies are opt-in
 - opinionated to reduce boilerplate
 
 ## example
