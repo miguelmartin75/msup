@@ -1,3 +1,19 @@
+[project]
+name = "msup"
+description = "Micro serialization utilities for Python with CLI support."
+version = "0.1.0"
+requires-python = ">= 3.12"
+license = "MIT"
+authors = [
+    {name = "Miguel Martin", email = "miguel@miguel-martin.com"}
+]
+maintainers = [
+    {name = "Miguel Martin", email = "miguel@miguel-martin.com"}
+]
+readme = "README.md"
+license-files = ["LICENSE"]
+keywords = ["serialization", "encode", "dataclass", "cli", "argparse"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"
@@ -12,3 +28,10 @@ docstring-code-format = true
 indent-style = "space"
 quote-style = "double"
 skip-magic-trailing-comma = false
+
+[build-system]
+requires = ["uv_build>=0.9.27,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""

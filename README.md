@@ -1,34 +1,59 @@
 # **M**icro **S**erialization **U**tilities for **P**ython
 
-With no required dependencies and only 500 LOC, you can:
-- create a CLI application from nested dataclass defintions (see [example](#example) below)
-- serialize/deserialize dataclasses to/from json and python dictionaries without pydantic
+With no required dependencies and only 496 LOC (`cloc ./msup`), this library enables you to:
+- create a CLI application from nested dataclass definitions (see [example](#example) below)
+- serialize/deserialize dataclasses or regular python classes to/from json and python dictionaries without dependencies
 
-Yes, the small LOC is a feature.
+Yes, the small LOC is an intentional feature.
 
-Serialization/de-serialization of dataclasses supports:
-- validating types
-- basic primitives: float, str, int,
-- optionals
-- unions if there is no ambiguity
-- nested dataclasses
-- callables defined as a string
-- sub-objects can be loaded from a string representing a:
-  - JSON, e.g. `'{"x": 3, "name": "abc"}'`
-  - a file to JSON or yaml, e.g. `myfile.json` or `myfile.yaml`
-- Features that are TODOs:
-    - [ ] enum
-    - [ ] renaming fields
-
+# design philosophy
 This library is designed with the following design philosophies:
 - simplicity
 - minimal LOC
 - no dependencies by default, i.e. dependencies are opt-in
 - opinionated to reduce boilerplate
 
-## example
+# feature list
 
-The following demonstrates automatically creating a multi-command CLI serializing a dataclass to JSON, you can find this example in [examples/mutlicli.py](./examples/multicli.py):
+Serialization and de-serialization of:
+- dataclasses
+    - validating types
+    - basic primitives: float, str, int,
+    - optionals
+    - unions if there is no ambiguity
+    - nested dataclasses
+    - callables defined as a string
+    - sub-objects can be loaded from a string representing a:
+      - JSON, e.g. `'{"x": 3, "name": "abc"}'`
+      - a file to JSON, e.g. `myfile.json`
+      - TODO: in a future version, hooks will be added to the library to support other serialization formats such as JSON or YAML
+- other python classes with `__init__`, e.g. `torch.optim.Adam` (see [examples/pt_basic.py](./examples/pt_basic.py))
+
+# TODOs
+
+- [ ] parameter sweep example
+- [ ] hooks to support other serialization formats, e.g. YAML
+- [ ] basic SQLite ORM, supporting:
+    - schema generation with support to mark fields as a PK, FK and an index
+    - encode/decode from SQLite
+- [ ] dataclass serialization
+    - [ ] renaming fields
+    - [ ] enum
+    - [ ] union tests (aside from Optional)
+- [ ] CI tests
+    - [ ] iterate over all examples/tests and run them
+
+## examples
+
+- simple CLI: [examples/simple.py](./examples/simple.py)
+- multiple CLI commands with nested config (see below): [examples/mutlicli.py](./examples/multicli.py)
+- create a pytorch model and optimizer from config: [examples/pt_dummpy.py](./examples/pt_basic.py) 
+    - This example constructs python classes, such as a `torch.optim.Adam`, or a user provided optimizer class, e.g.
+        ```bash
+        python examples/pt_basic.py test_optim_advanced --lr 0.42 --optim torch.optim.SGD
+        ```
+
+The following demonstrates automatically creating a multi-command CLI serializing a dataclass to JSON, you can find this example in [examples/mutlicli.py](./examples/multicli.py). 
 ```python
 import os
 from dataclasses import dataclass
@@ -89,12 +114,13 @@ if __name__ == "__main__":
     })
 ```
 
-Now you can go ahead and run the train or eval function via `python <script> {train,eval} [optional-args...]`, e.g.:
+With this example, you can run the train or eval function via `python <script> {train,eval} [optional-args...]`, e.g.:
+
 ```bash
 python examples/multicli.py train
 ```
 
-Here's how to incorporate a python callable, incase you want to train with a different step function:
+Here's how we can change provide a custom python callable to use a different step function:
 
 ```bash
 python examples/multicli.py train --lr_step_fn examples.multicli.identity_step_fn --lr 0.1 --name identity
@@ -106,7 +132,8 @@ python examples/multicli.py train configs/identity.json
 python examples/multicli.py train --Args configs/identity.json --lr 0.2
 ```
 
-You can also read in nested dataclasses from a file (e.g. JSON), or a string representing the encoded format (e.g. JSON), from the CLI, e.g.
+We can also read a nested dataclasses from a file (e.g. JSON), or a string representing the encoded format (e.g. JSON), from the CLI, e.g.
+
 ```bash
 python examples/multicli.py train --model_config configs/models/small.json
 

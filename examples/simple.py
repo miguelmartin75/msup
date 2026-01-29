@@ -25,9 +25,7 @@ def bar(args: BarArgs):
     print(f"bar: {args=}")
 
 if __name__ == "__main__":
-    # cli(foo)
-
     cli({
         foo: "run foo",
-        bar: "bar",
+        bar: "run bar",
     })

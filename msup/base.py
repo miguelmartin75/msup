@@ -9,7 +9,7 @@ from typing import Optional, List, Tuple, Dict, Union, TypeVar, get_origin, get_
 
 T = TypeVar('T')
 
-def to_kwargs(x: T) -> dict: ...
+def to_kwargs(clazz: type, x: T) -> dict: ...
 def from_dict(clazz: type, x: dict) -> T: ...
 def to_dict(x: T) -> dict: ...
 def from_json(clazz: type, s: str | None = None, file_like=None, path: str | None = None) -> T:
@@ -21,6 +21,12 @@ def from_json(clazz: type, s: str | None = None, file_like=None, path: str | Non
         return from_dict(clazz, json.load(file_like))
     else:
         return from_dict(clazz, json.loads(s))
+
+@dataclass
+class InitArg:
+    name: str
+    default: Any = MISSING
+    type: Any = None
 
 def to_json(x: T, file_like=None, indent: int | None = 2) -> str | None:
     if file_like:
@@ -36,6 +42,23 @@ def to_json(x: T, file_like=None, indent: int | None = 2) -> str | None:
 
 def has_default_value(f):
     return f.default is not MISSING or f.default_factory is not MISSING
+
+def fields_or_init_kwargs(clazz: type):
+    assert inspect.isclass(clazz), f"{clazz} is not a class"
+    if is_dataclass(clazz):
+        return list(fields(clazz))
+    else:
+        sig = inspect.signature(clazz.__init__)
+        type_hints = get_type_hints(clazz.__init__)
+        result = []
+        for name, param in sig.parameters.items():
+            if name in ("self", "cls"):
+                continue
+            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                continue
+            default = MISSING if param.default is inspect._empty else param.default
+            result.append(InitArg(name=name, type=type_hints.get(name), default=default))
+        return result
 
 def load_callable(name: str):
     idx = name.rfind('.')
@@ -55,9 +78,13 @@ def _to_dict_value(x: T, field_type: type):
             return x
         return _to_dict_value(x, get_args(field_type)[0])
     elif t in (dict,):
-        return {_to_dict_value(k, get_args(field_type)[0] or type(k)): _to_dict_value(v, get_args(field_type)[1] or type(v)) for k, v in x.items()}
+        return {
+            _to_dict_value(k, maybe_idx(get_args(field_type), 0, type(k))): 
+            _to_dict_value(v, maybe_idx(get_args(field_type), 1, type(v)))
+            for k, v in x.items()
+        }
     elif t in (tuple, Tuple, list, List):
-        return t([_to_dict_value(xx, get_args(field_type)[0] or type(xx)) for xx in x])
+        return t([_to_dict_value(xx, maybe_idx(get_args(field_type), 0, type(xx))) for xx in x])
     elif is_dataclass(t):
         return to_dict(x)
     elif get_origin(field_type) is Callable2:
@@ -83,14 +110,21 @@ def _to_dict_value(x: T, field_type: type):
 
 def to_dict(x: T) -> dict:
     result = {}
-    for f in fields(x):
-        result[f.name] = _to_dict_value(x.__dict__[f.name], f.type)
+    for f in fields_or_init_kwargs(type(x)):
+        if hasattr(x, f.name):
+            value = getattr(x, f.name)
+            field_type = f.type if f.type is not None else type(value)
+            result[f.name] = _to_dict_value(value, field_type)
     return result
 
-def to_kwargs(x: T) -> dict:
+def to_kwargs(clazz: type, x: T) -> dict:
     result = {}
-    for f in fields(x):
-        result[f.name] = x.__dict__[f.name]
+    for f in fields_or_init_kwargs(clazz):
+        if isinstance(x, dict):
+            if f.name in x:
+                result[f.name] = x[f.name]
+        elif hasattr(x, f.name):
+            result[f.name] = getattr(x, f.name)
     return result
 
 def is_optional(x: type) -> bool:
@@ -165,10 +199,12 @@ def _from_value(
         else:
             assert not isinstance(x, str)
             return from_dict(field_type, x)
-    if x is None or origin in (int, float, str, bool):
-        return field_type(x)
     elif is_optional(field_type):
+        if x is None:
+            return None
         return _from_value(x, args[0], type(x), field_name=field_name)
+    elif x is None or origin in (int, float, str, bool):
+        return field_type(x)
     elif origin in (Union, UnionType):
         return _from_value(x, compat_type, concrete_type, field_name=field_name)
     elif origin in (dict,):
@@ -203,16 +239,16 @@ def _from_value(
         raise AssertionError(f"unexpected type: {field_type} (origin={origin}, concrete_type={concrete_type}, args={args}, x={x})")
 
 def from_dict(clazz: type, x: dict) -> T:
-    assert is_dataclass(clazz), f"{cmd_type} is not a dataclass"
     construct_args = {}
-    for f in fields(clazz):
+    for f in fields_or_init_kwargs(clazz):
         if f.name in x:
+            field_type = f.type if f.type is not None else type(x[f.name])
             construct_args[f.name] = _from_value(
                 x[f.name],
-                f.type,
+                field_type,
                 type(x[f.name]),
                 field_name=f.name,
             )
-        elif is_optional(f.type):
+        elif f.type is not None and is_optional(f.type):
             construct_args[f.name] = None
     return clazz(**construct_args)
