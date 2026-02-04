@@ -1,5 +1,9 @@
 # **M**icro **S**erialization **U**tilities for **P**ython
 
+```
+uv pip install msup
+```
+
 With no required dependencies and only 496 LOC (`cloc ./msup`), this library enables you to:
 - create a CLI application from nested dataclass definitions (see [example](#example) below)
 - serialize/deserialize dataclasses or regular python classes to/from json and python dictionaries without dependencies
