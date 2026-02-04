@@ -24,7 +24,7 @@ class TrainConfig:
 class TrainConfigAdvanced:
     model: ModelConfig = cliarg(help="model to use", default_factory=ModelConfig)
     lr: float = 0.1  # NOTE: not realistic, for testing
-    optim: Callable = "torch.optim.SGD"
+    optim: Callable = torch.optim.SGD
 
 @dataclass
 class TrainConfigAdvancedAlt:
