@@ -190,7 +190,7 @@ def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None
                 _add_args(
                     parser,
                     f.type,
-                    prefix=field_name,
+                    prefix=name,
                     short_prefix=f.metadata.get("short", [None])[0],
                     force_no_default=True,
                 )

@@ -35,6 +35,8 @@ Serialization and de-serialization of:
 
 # TODOs
 
+- [ ] test optional robustly
+    - [ ] Callable | None does not work
 - [ ] parameter sweep example
 - [ ] hooks to support other serialization formats, e.g. YAML
 - [ ] basic SQLite ORM, supporting:
