@@ -151,7 +151,7 @@ def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None
         name = prefix + "." + field_name if prefix else field_name
         req = prefix == "" and not has_default_value(f)
         o_or_field_type = get_origin(f.type) or f.type
-        default_value = f.default if f.default is not MISSING and not force_no_default else None
+        default_value = f.default if f.default is not MISSING and (not force_no_default or f.type is bool) else None
         default_help = f"Default: {default_value}" if default_value else ""
         env_name = f.metadata.get("env")
         env_value = os.getenv(env_name) if env_name else None
