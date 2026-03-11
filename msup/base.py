@@ -62,7 +62,7 @@ def fields_or_init_kwargs(clazz: type):
 
 def load_callable(name: str):
     idx = name.rfind('.')
-    assert idx != -1, "expected <module_name>.<name>"
+    assert idx != -1, f"expected <module_name>.<name>, got {name}"
     module_name = name[0:idx]
     fn_name = name[idx+1:]
     mod = importlib.import_module(module_name)
@@ -89,7 +89,7 @@ def _to_dict_value(x: T, field_type: type):
         return to_dict(x)
     elif get_origin(field_type) is Callable2:
         if callable(x):
-            return x.__name__
+            return f"{x.__module__}.{x.__name__}"
         else:
             assert isinstance(x, str), f"{x.__class__=}"
             return x

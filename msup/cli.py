@@ -5,10 +5,11 @@ import argparse
 from dataclasses import dataclass, field, is_dataclass, fields, MISSING
 from collections.abc import Callable as Callable2
 
-from msup.base import has_default_value, is_optional, _from_value, to_json
+from msup.base import has_default_value, is_optional, _from_value, to_json, to_kwargs
 from typing import Optional, List, Dict, Union, TypeVar, get_origin, get_args, Callable, get_type_hints, Any
 
 T = TypeVar('T')
+_UNSET = object()
 
 def cli(cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], **argsparse_kwargs): ...
 def cliarg(help: str = "", short: str | list[str] | None = None, env: str | None = None, pos: bool = False, opt: bool = True, **kwargs): ...
@@ -38,77 +39,107 @@ def _get_first_arg(func):
         raise TypeError(f"First argument for {getattr(fn, '__name__', fn)} is not a dataclass: {dtype}")
     return result
 
-def _from_cli_args(clazz: type, args, prefix: str = ""):
-    assert is_dataclass(clazz), f"{cmd_type} is not a dataclass"
+def _get_env_default_value(f):
+    env_name = f.metadata.get("env")
+    env_value = os.getenv(env_name) if env_name else None
+    if env_value:
+        return _from_value(env_value, f.type, str, f.name)
+    return _UNSET
 
-    construct_args = {}
+def _get_cli_value(args, arg_name: str):
+    value = getattr(args, arg_name, _UNSET)
+    if value is _UNSET and hasattr(args, arg_name + "_pos"):
+        pos_value = getattr(args, arg_name + "_pos")
+        if pos_value is not _UNSET:
+            return pos_value
+    return value
+
+def _from_cli_args(clazz: type, args, prefix: str = "", args_value: Any = _UNSET):
+    assert is_dataclass(clazz), f"{clazz} is not a dataclass"
+
+    if args_value is _UNSET:
+        root_args_value = getattr(args, "args", _UNSET)
+        args_value = _from_value(root_args_value, clazz, str, "") if prefix == "" and root_args_value is not _UNSET else None
+
+    construct_args = to_kwargs(clazz, args_value) if args_value is not None else {}
     for f in fields(clazz):
         arg_name = prefix + "." + f.name if prefix else f.name
-        value = getattr(args, arg_name, None) 
-        if value is None and hasattr(args, arg_name + "_pos"):
-            value = getattr(args, arg_name + "_pos")
+        value = _get_cli_value(args, arg_name)
+        env_default = _get_env_default_value(f)
         if is_dataclass(f.type):
-            if value is not None:
+            if value is not _UNSET:
                 if not isinstance(value, str):
                     error_exit(f"expected string for --{arg_name}, got {type(value)} ({value=})", 2)
 
+                sub_args_value = _from_value(
+                    value,
+                    f.type,
+                    str,
+                    f.name,
+                )
+            else:
+                sub_args_value = construct_args.get(f.name, env_default)
+
+            sub = _from_cli_args(f.type, args, prefix=arg_name, args_value=sub_args_value)
+            construct_args[f.name] = sub
+        elif get_origin(f.type) is dict or f.type is dict:
+            if value is not _UNSET:
+                if not isinstance(value, str):
+                    error_exit(f"expected string for --{arg_name}, got {type(value)} ({value=})", 2)
                 sub = _from_value(
                     value,
                     f.type,
                     str,
                     f.name,
                 )
-                # NOTE: merge additional values
-                for subf in fields(f.type):
-                    subv = getattr(args, arg_name + "." + subf.name)
-                    if subv:
-                        v = _from_value(
-                            subv,
-                            subf.type,
-                            type(subv),
-                            field_name=f.name,
-                        )
-                        setattr(sub, subf.name, subv)
+                construct_args[f.name] = sub
+            elif f.name in construct_args:
+                continue
+            elif env_default is not _UNSET:
+                construct_args[f.name] = env_default
+            elif has_default_value(f):
+                continue
             else:
-                sub = _from_cli_args(f.type, args, prefix=f.name)
-
-            construct_args[f.name] = sub
-        elif get_origin(f.type) is dict or f.type is dict:
-            if value is None:
-                if has_default_value(f):
-                    continue
                 error_exit(f"--{arg_name} not provided (default value DNE)", 3)
-            if not isinstance(value, str):
-                error_exit(f"expected string for --{arg_name}, got {type(value)} ({value=})", 2)
-            sub = _from_value(
-                value,
-                f.type,
-                str,
-                f.name,
-            )
-            construct_args[f.name] = sub
         elif f.type is bool:
-            if isinstance(value, bool):
-                construct_args[f.name] = value
+            if value is not _UNSET:
+                if isinstance(value, bool):
+                    construct_args[f.name] = value
+                else:
+                    if not isinstance(value, str):
+                        error_exit(f"expected string for --{arg_name}, got {type(value)} ({value=})", 2)
+
+                    if value.lower() not in ("0", "false", "1", "true"):
+                        error_exit(f"expected one of: {0, False, 1, True} as a bool value for --{arg_name}, got: {value}")
+
+                    construct_args[f.name] = value.lower() in ("1", "true")
+            elif f.name in construct_args:
+                continue
+            elif env_default is not _UNSET:
+                construct_args[f.name] = env_default
+            elif has_default_value(f):
+                continue
+            elif is_optional(f.type):
+                construct_args[f.name] = None
             else:
-                if not isinstance(value, str):
-                    error_exit(f"expected string for --{arg_name}, got {type(value)} ({value=})", 2)
-
-                if value.lower() not in ("0", "false", "1", "true"):
-                    error_exit(f"expected one of: {0, False, 1, True} as a bool value for --{arg_name}, got: {value}")
-
-                construct_args[f.name] = value.lower() in ("1", "true")
+                error_exit(f"--{arg_name} not provided (default value DNE)", 3)
         else:
-            if value is not None:
+            if value is not _UNSET:
                 construct_args[f.name] = _from_value(
                     value,
                     f.type,
                     type(value),
                     field_name=f.name,
                 )
+            elif f.name in construct_args:
+                continue
+            elif env_default is not _UNSET:
+                construct_args[f.name] = env_default
+            elif has_default_value(f):
+                continue
             elif is_optional(f.type):
                 construct_args[f.name] = None
-            elif not has_default_value(f):
+            else:
                 error_exit(f"--{arg_name} not provided (default value DNE)", 3)
 
     return clazz(**construct_args)
@@ -136,6 +167,7 @@ def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None
                 nargs="?",
                 type=_get_cli_arg_type(cmd_type),
                 help=f"configuration for {cmd_type.__name__}",
+                default=_UNSET,
             )
         parser.add_argument(
             "--Args",
@@ -144,19 +176,20 @@ def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None
             type=_get_cli_arg_type(cmd_type),
             help=f"configuration for {cmd_type.__name__}",
             required=False,
+            default=_UNSET,
         )
 
     for f in fields(cmd_type):
         field_name = f.name
         name = prefix + "." + field_name if prefix else field_name
-        req = prefix == "" and not has_default_value(f)
+        req = False
         o_or_field_type = get_origin(f.type) or f.type
         default_value = f.default if f.default is not MISSING and not force_no_default else None
         default_help = f"Default: {default_value}" if default_value else ""
-        env_name = f.metadata.get("env")
-        env_value = os.getenv(env_name) if env_name else None
-        if env_value:
-            default_value = _from_value(env_value, f.type, str, field_name)
+        env_default_value = _get_env_default_value(f)
+        if env_default_value is not _UNSET:
+            default_value = env_default_value
+            env_name = f.metadata.get("env")
             default_help = f"Default (using env: ${{{env_name}}}): {default_value}"
 
         help = f.metadata.get("help") + ". " + default_help if f.metadata.get("help") else default_help
@@ -186,6 +219,7 @@ def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None
                     **kwargs,
                     type=_get_cli_arg_type(f.type),
                     help=help,
+                    default=_UNSET,
                 )
                 _add_args(
                     parser,
@@ -201,7 +235,7 @@ def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None
                     **kwargs,
                     type=_get_cli_arg_type(f.type),
                     help=help,
-                    default=default_value,
+                    default=_UNSET,
                 )
             elif o_or_field_type in (dict,):
                 parser.add_argument(
@@ -209,7 +243,7 @@ def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None
                     **kwargs,
                     type=str,
                     help=help,
-                    default=default_value,
+                    default=_UNSET,
                 )
             elif f.type in (bool,):
                 if "nargs" not in kwargs:
@@ -220,7 +254,7 @@ def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None
                     const=not default_value,
                     type=to_bool,
                     metavar="{0|1,true|false,yes|no}",
-                    default=default_value,
+                    default=_UNSET,
                 )
             elif get_origin(f.type) is Callable2:
                 parser.add_argument(
@@ -228,7 +262,7 @@ def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None
                     **kwargs,
                     type=str,
                     help=help,
-                    default=default_value,
+                    default=_UNSET,
                 )
             else:
                 parser.add_argument(
@@ -236,7 +270,7 @@ def _add_args(parser, cmd_type: type, prefix: str = "", short_prefix: str | None
                     **kwargs,
                     type=_get_cli_arg_type(f.type),
                     help=help,
-                    default=default_value,
+                    default=_UNSET,
                 )
 
 def cliarg(help: str = "", short: str | list[str] | None = None, env: str | None = None, pos: bool = False, opt: bool = True, **kwargs):

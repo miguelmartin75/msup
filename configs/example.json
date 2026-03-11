@@ -1,11 +1,11 @@
 {
   "model_config": {
-    "n_layers": 10,
+    "n_layers": 7,
     "checkpoint_path": null
   },
   "lr": 0.01,
   "name": "example",
-  "lr_step_fn": "cosine_warmup_lr_step",
+  "lr_step_fn": "__main__.cosine_warmup_lr_step",
   "num_workers": -1,
   "cont": false,
   "config_root_dir": "./configs"
