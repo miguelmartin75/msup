@@ -2,10 +2,12 @@ import argparse
 import contextlib
 import io
 import json
+import os
+import sys
 from dataclasses import dataclass
 from typing import Callable
 
-from msup.cli import _add_args, _from_cli_args, cliarg
+from msup.cli import _add_args, _from_cli_args, _get_first_arg, cli, cliarg, ex_default_callable, to_bool
 
 
 @dataclass
@@ -38,6 +40,34 @@ class NestedBoolConfig:
 @dataclass
 class NestedBoolArgs:
     nested: NestedBoolConfig = cliarg(help="nested config", default_factory=NestedBoolConfig)
+
+
+@dataclass
+class OptionalCallableArgs:
+    x: Callable | None = None
+
+
+@dataclass
+class EnvArgs:
+    name: str = cliarg(env="MSUP_TEST_NAME")
+
+
+@dataclass
+class DictArgs:
+    mapping: dict[str, int]
+
+
+@dataclass
+class CliRunArgs:
+    name: str
+    count: int = 0
+
+
+@dataclass
+class ParserVariantsArgs:
+    name: str = cliarg(pos=True, short="n")
+    values: list[int] = cliarg(default_factory=list, short="v")
+    flag: bool = cliarg(default=False, short="f")
 
 
 def _parse_args(clazz: type, argv: list[str]):
@@ -115,6 +145,122 @@ def test_nested_bool_cli_values_are_parsed():
     assert args.nested.keep is False
 
 
+def test_optional_callable_cli_value_is_loaded():
+    args = _parse_args(OptionalCallableArgs, ["--x", "msup.cli.ex_default_callable"])
+
+    assert args.x is ex_default_callable
+
+
+def test_env_default_is_used_when_cli_arg_is_missing():
+    old_value = os.environ.get("MSUP_TEST_NAME")
+    os.environ["MSUP_TEST_NAME"] = "from-env"
+
+    try:
+        args = _parse_args(EnvArgs, [])
+    finally:
+        if old_value is None:
+            del os.environ["MSUP_TEST_NAME"]
+        else:
+            os.environ["MSUP_TEST_NAME"] = old_value
+
+    assert args.name == "from-env"
+
+
+def test_dict_cli_value_is_loaded_from_json():
+    args = _parse_args(DictArgs, ["--mapping", '{"a": 1, "b": 2}'])
+
+    assert args.mapping == {"a": 1, "b": 2}
+
+
+def test_nested_dataclass_cli_value_can_be_passed_as_json():
+    args = _parse_args(NestedBoolArgs, ["--nested", '{"enabled": true, "keep": false}'])
+
+    assert args.nested.enabled is True
+    assert args.nested.keep is False
+
+
+def test_positional_short_and_list_args_are_parsed():
+    args = _parse_args(ParserVariantsArgs, ["positional-name", "-v", "1", "2", "3", "-f"])
+
+    assert args.name == "positional-name"
+    assert args.values == [1, 2, 3]
+    assert args.flag is True
+
+
+def test_cli_runs_single_command_with_positional_config():
+    seen = []
+
+    def run(args: CliRunArgs):
+        seen.append(args)
+
+    old_argv = sys.argv
+    sys.argv = ["prog", '{"name": "positional", "count": 2}']
+
+    try:
+        cli(run, pos_arg_config=True)
+    finally:
+        sys.argv = old_argv
+
+    assert seen == [CliRunArgs(name="positional", count=2)]
+
+
+def test_cli_runs_subcommand():
+    seen = []
+
+    def train(args: CliRunArgs):
+        seen.append(args)
+
+    old_argv = sys.argv
+    sys.argv = ["prog", "train", "--name", "sub", "--count", "4"]
+
+    try:
+        cli({train: "training command"})
+    finally:
+        sys.argv = old_argv
+
+    assert seen == [CliRunArgs(name="sub", count=4)]
+
+
+def test_cli_prints_help_when_no_subcommand_is_selected():
+    def train(args: CliRunArgs):
+        raise AssertionError("train should not be called when no subcommand is selected")
+
+    stdout = io.StringIO()
+    old_argv = sys.argv
+    sys.argv = ["prog"]
+
+    try:
+        with contextlib.redirect_stdout(stdout):
+            cli({train: "training command"})
+    finally:
+        sys.argv = old_argv
+
+    assert "subcommand help" in stdout.getvalue()
+
+
+def test_get_first_arg_rejects_non_dataclass_annotations():
+    def bad(x: int):
+        return x
+
+    try:
+        _get_first_arg(bad)
+    except TypeError as exc:
+        assert "First argument for bad is not a dataclass" in str(exc)
+        return
+
+    assert False, "expected _get_first_arg to reject non-dataclass first arguments"
+
+
+def test_to_bool_rejects_invalid_values():
+    try:
+        to_bool("maybe")
+    except ValueError as exc:
+        assert "Invalid truth value" in str(exc)
+        return
+
+    assert False, "expected to_bool to reject invalid input"
+
+
 if __name__ == "__main__":
     test_args_config_overrides_dataclass_defaults()
     test_explicit_cli_values_override_config()
@@ -122,3 +268,13 @@ if __name__ == "__main__":
     test_missing_required_field_still_errors()
     test_nested_bool_defaults_are_preserved()
     test_nested_bool_cli_values_are_parsed()
+    test_optional_callable_cli_value_is_loaded()
+    test_env_default_is_used_when_cli_arg_is_missing()
+    test_dict_cli_value_is_loaded_from_json()
+    test_nested_dataclass_cli_value_can_be_passed_as_json()
+    test_positional_short_and_list_args_are_parsed()
+    test_cli_runs_single_command_with_positional_config()
+    test_cli_runs_subcommand()
+    test_cli_prints_help_when_no_subcommand_is_selected()
+    test_get_first_arg_rejects_non_dataclass_annotations()
+    test_to_bool_rejects_invalid_values()

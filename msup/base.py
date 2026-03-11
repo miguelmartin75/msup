@@ -100,8 +100,10 @@ def _to_dict_value(x: T, field_type: type):
                 result.append(_to_dict_value(x, arg))
             except Exception:
                 continue
-        if len(result) > 0:
+        if len(result) > 1:
             raise ValueError(f"multiple possible values for union type: {field_type}")
+        if len(result) == 0:
+            raise ValueError(f"no possible values for union type: {field_type}")
         return result[0]
     elif field_type:
         return field_type(x)
@@ -149,18 +151,20 @@ def _is_compat(x1: type, x2: type) -> tuple[bool, type | None]:
             x1_args = get_args(x1)
             compat_types = []
             for arg in x1_args:
-                if _is_compat(arg, concrete_type):
-                    compat_types.append(arg)
+                is_c, compat_type = _is_compat(arg, x2)
+                if is_c:
+                    compat_types.append(compat_type if compat_type is not None else arg)
+            if len(compat_types) == 0:
+                return False, None
             if len(compat_types) != 1:
-                raise AssertionError(f"multiple matching types for {field_name}: {compat_types}")
-            else:
-                return True, compat_types[0]
+                raise AssertionError(f"multiple matching types for {x1}: {compat_types}")
+            return True, compat_types[0]
         elif xx1 in (dict,):
             return xx2 in (dict, str,), xx1
         elif xx1 in (int, float, bool, str) and xx2 in (int, float, bool, str):
             return True, xx1
         elif xx1 is Callable2:
-            return callable(xx2) or isinstance(xx2, str), xx1
+            return xx2 is str or (inspect.isclass(xx2) and issubclass(xx2, Callable2)), xx1
         else:
             return xx1 == xx2, xx1
 

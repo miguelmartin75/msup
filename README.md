@@ -4,7 +4,7 @@
 uv pip install msup
 ```
 
-With no required dependencies and only 528 LOC (`cloc ./msup`), this library enables you to:
+With no required dependencies and only 534 LOC (`cloc ./msup`), this library enables you to:
 - create a CLI application from nested dataclass definitions (see [example](#example) below)
 - serialize/deserialize dataclasses or regular python classes to/from json and python dictionaries without dependencies
 
@@ -35,8 +35,6 @@ Serialization and de-serialization of:
 
 # TODOs
 
-- [ ] test optional robustly
-    - [ ] Callable | None does not work
 - [ ] parameter sweep example
 - [ ] hooks to support other serialization formats, e.g. YAML
 - [ ] basic SQLite ORM, supporting:
@@ -45,9 +43,6 @@ Serialization and de-serialization of:
 - [ ] dataclass serialization
     - [ ] renaming fields
     - [ ] enum
-    - [ ] union tests (aside from Optional)
-- [ ] CI tests
-    - [ ] iterate over all examples/tests and run them
 
 ## examples
 
