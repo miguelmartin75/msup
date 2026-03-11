@@ -14,9 +14,8 @@ coverage:
 
 tag-release version:
     test -n "{{version}}"
-    test -z "$(git status --porcelain)"
     uv version "{{version}}" --frozen
-    git add pyproject.toml
+    git add pyproject.toml uv.lock
     git commit -m "Release {{version}}"
     git tag -a "v{{version}}" -m "Release {{version}}"
     git push origin HEAD

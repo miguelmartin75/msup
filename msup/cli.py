@@ -36,7 +36,7 @@ def _get_first_arg(func):
         result = hints.get(name)
         break
     if not is_dataclass(result):
-        raise TypeError(f"First argument for {getattr(fn, '__name__', fn)} is not a dataclass: {dtype}")
+        raise TypeError(f"First argument for {getattr(func, '__name__', func)} is not a dataclass: {result}")
     return result
 
 def _get_env_default_value(f):
@@ -148,10 +148,12 @@ def _get_cli_arg_type(x: type) -> type:
     if is_dataclass(x):
         return str
     elif is_optional(x):
-        return get_args(x)[0]
+        return _get_cli_arg_type(next(arg for arg in get_args(x) if arg is not type(None)))
     elif get_origin(x) is list:
-        return get_args(x)[0]
+        return _get_cli_arg_type(get_args(x)[0])
     elif get_origin(x) is dict:
+        return str
+    elif get_origin(x) is Callable2 or x is Callable2:
         return str
     return x
 
