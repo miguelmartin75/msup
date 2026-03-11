@@ -27,7 +27,7 @@ class Baz:
         self.count = count
         self.meta = meta
 
-if __name__ == "__main__":
+def test_is_compat_for_supported_types():
     assert _is_compat(int, int)[0]
     assert _is_compat(bool, int)[0]
     assert _is_compat(dict, Dict[int, int])[0]
@@ -36,10 +36,14 @@ if __name__ == "__main__":
     assert _is_compat(Union[int, None], int)[0]
     assert _is_compat(Union[int, None], type(None))[0]
 
+
+def test_dataclass_round_trip():
     f = Foobar(dd=dict(), foo=Foo(a=3, b=5), bar=Bar(x=[1.5]), z=None)
     assert from_dict(Foobar, to_dict(f)) == f
     assert from_dict(Foo, {"a": 1, "b": 5}) == Foo(a=1, b=5)
 
+
+def test_from_dict_supports_regular_python_classes():
     baz = from_dict(Baz, {"name": "ok", "count": None, "meta": {"k": 1}})
     assert isinstance(baz, Baz)
     assert baz.name == "ok"

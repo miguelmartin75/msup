@@ -14,6 +14,13 @@ readme = "README.md"
 license-files = ["LICENSE"]
 keywords = ["serialization", "encode", "dataclass", "cli", "argparse"]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
+    "twine>=6.1.0",
+]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"

@@ -3,10 +3,10 @@
     "n_layers": 10,
     "checkpoint_path": null
   },
-  "lr": 0.1,
+  "lr": 0.2,
   "name": "identity",
-  "lr_step_fn": "identity_step_fn",
-  "num_workers": -1,
+  "lr_step_fn": "__main__.identity_step_fn",
+  "num_workers": 42,
   "cont": false,
   "config_root_dir": "./configs"
 }
