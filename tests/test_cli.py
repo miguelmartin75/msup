@@ -29,6 +29,17 @@ class RequiredArgs:
     count: int = 3
 
 
+@dataclass
+class NestedBoolConfig:
+    enabled: bool = cliarg(help="nested bool", default=False)
+    keep: bool = cliarg(help="nested bool default true", default=True)
+
+
+@dataclass
+class NestedBoolArgs:
+    nested: NestedBoolConfig = cliarg(help="nested config", default_factory=NestedBoolConfig)
+
+
 def _parse_args(clazz: type, argv: list[str]):
     parser = argparse.ArgumentParser()
     _add_args(parser, clazz)
@@ -90,8 +101,24 @@ def test_missing_required_field_still_errors():
     assert False, "expected missing required field to raise SystemExit"
 
 
+def test_nested_bool_defaults_are_preserved():
+    args = _parse_args(NestedBoolArgs, [])
+
+    assert args.nested.enabled is False
+    assert args.nested.keep is True
+
+
+def test_nested_bool_cli_values_are_parsed():
+    args = _parse_args(NestedBoolArgs, ["--nested.enabled", "true", "--nested.keep", "false"])
+
+    assert args.nested.enabled is True
+    assert args.nested.keep is False
+
+
 if __name__ == "__main__":
     test_args_config_overrides_dataclass_defaults()
     test_explicit_cli_values_override_config()
     test_required_fields_can_come_from_config()
     test_missing_required_field_still_errors()
+    test_nested_bool_defaults_are_preserved()
+    test_nested_bool_cli_values_are_parsed()
