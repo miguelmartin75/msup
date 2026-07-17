@@ -5,8 +5,8 @@
   },
   "lr": 0.2,
   "name": "identity",
-  "lr_step_fn": "__main__.identity_step_fn",
-  "num_workers": 42,
+  "lr_step_fn": "examples.cli.callbacks.identity_step_fn",
+  "num_workers": -1,
   "cont": false,
   "config_root_dir": "./configs"
 }

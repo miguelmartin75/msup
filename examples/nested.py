@@ -1,10 +1,7 @@
 from dataclasses import dataclass
-
 from typing import Callable
 
 from msup.cli import cli, cliarg
-
-
 
 @dataclass
 class DatasetConfig:
@@ -16,6 +13,7 @@ class DatasetConfig:
 class DataloaderConfig:
     dataset: DatasetConfig = cliarg(help="dataset", default_factory=DatasetConfig)
 
+
 @dataclass
 class TrainConfig:
     train_data: DataloaderConfig = cliarg(help="train dset", default_factory=DataloaderConfig)
@@ -24,6 +22,6 @@ class TrainConfig:
 def train(config: TrainConfig):
     print(config)
 
+
 if __name__ == "__main__":
     cli(train)
-
