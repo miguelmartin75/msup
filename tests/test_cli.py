@@ -1,28 +1,85 @@
-import argparse
-import contextlib
-import io
-import json
 import os
 import sys
-from dataclasses import dataclass
-from typing import Callable
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass, field
+from enum import Enum
+from io import StringIO
+from typing import Any, Callable, Optional
 
-from msup.cli import _add_args, _from_cli_args, _get_first_arg, cli, cliarg, ex_default_callable, to_bool
+from msup.cli import argument_type, cli, cliarg, strtobool
+
+
+received = []
+
+
+def callback(value: int) -> int:
+    return value + 1
 
 
 @dataclass
-class ModelConfig:
-    n_layers: int = cliarg(default=10)
-    checkpoint_path: str | None = cliarg(default=None)
+class OptionalListArgs:
+    values: list[int] | None = None
 
 
 @dataclass
-class TrainArgs:
-    model_config: ModelConfig = cliarg(default_factory=ModelConfig)
-    lr: float = 0.01
-    name: str = cliarg(default="example")
-    lr_step_fn: Callable[[int, float], float] = cliarg(default=None)
-    num_workers: int = -1
+class ReversedOptionalListArgs:
+    values: None | list[int] = None
+
+
+@dataclass
+class TypingOptionalListArgs:
+    values: Optional[list[int]] = None
+
+
+@dataclass
+class PrimitiveArgs:
+    count: int = 1
+    ratio: float = 1.5
+    name: str = "default"
+    enabled: bool = False
+
+
+@dataclass
+class ChildArgs:
+    count: int = 1
+
+
+@dataclass
+class CollectionArgs:
+    numbers: list[int] = field(default_factory=list)
+    labels: list = field(default_factory=list)
+    coordinates: tuple[int, ...] = ()
+
+
+@dataclass
+class StructuredArgs:
+    values: dict[str, int] = field(default_factory=dict)
+    child: ChildArgs = field(default_factory=ChildArgs)
+    transform: Callable[[int], int] = callback
+
+
+@dataclass
+class AnyArgs:
+    value: Any = None
+
+
+@dataclass
+class ParserVariantsArgs:
+    name: str = cliarg(pos=True, short="n")
+    values: list[int] = cliarg(default_factory=list, short="v")
+    enabled: bool = cliarg(default=False, short="f")
+
+
+@dataclass
+class RemainderArgs:
+    extra: list[str] = cliarg(pos=True, opt=False, default_factory=list)
+
+
+@dataclass
+class PrefixRemainderArgs:
+    prefix: str = cliarg(pos=True, default="")
+    extra: list[str] = cliarg(pos=True, opt=False, default_factory=list)
 
 
 @dataclass
@@ -32,249 +89,308 @@ class RequiredArgs:
 
 
 @dataclass
-class NestedBoolConfig:
-    enabled: bool = cliarg(help="nested bool", default=False)
-    keep: bool = cliarg(help="nested bool default true", default=True)
+class SourceArgs:
+    selected: int = cliarg(env="MSUP_TEST_SELECTED", default=1)
+    from_config: int = 2
+    default_only: str = "default"
 
 
 @dataclass
-class NestedBoolArgs:
-    nested: NestedBoolConfig = cliarg(help="nested config", default_factory=NestedBoolConfig)
+class HelpArgs:
+    visible: str = "visible default"
+    secret: str = cliarg(secret=True, default="secret default")
+    environment: str = cliarg(env="MSUP_TEST_HELP_VISIBLE", default="environment default")
+    secret_environment: str = cliarg(env="MSUP_TEST_HELP_SECRET", secret=True, default="secret environment default")
 
 
 @dataclass
-class OptionalCallableArgs:
-    x: Callable | None = None
+class EnvironmentBoolArgs:
+    enabled: bool = cliarg(env="MSUP_TEST_ENABLED", default=False)
 
 
 @dataclass
-class EnvArgs:
-    name: str = cliarg(env="MSUP_TEST_NAME")
+class NestedArgs:
+    child: ChildArgs = field(default_factory=ChildArgs)
 
 
 @dataclass
-class DictArgs:
-    mapping: dict[str, int]
+class UnsupportedUnionArgs:
+    value: int | str = 1
 
 
 @dataclass
-class CliRunArgs:
-    name: str
-    count: int = 0
+class FixedTupleArgs:
+    coordinates: tuple[int, str] = (0, "")
+
+
+class Choice(Enum):
+    FIRST = "first"
 
 
 @dataclass
-class ParserVariantsArgs:
-    name: str = cliarg(pos=True, short="n")
-    values: list[int] = cliarg(default_factory=list, short="v")
-    flag: bool = cliarg(default=False, short="f")
+class EnumArgs:
+    choice: Choice = Choice.FIRST
 
 
-def _parse_args(clazz: type, argv: list[str]):
-    parser = argparse.ArgumentParser()
-    _add_args(parser, clazz)
-    return _from_cli_args(clazz, parser.parse_args(argv))
+@dataclass
+class SubcommandArgs:
+    value: int = 0
 
 
-def test_args_config_overrides_dataclass_defaults():
-    config = json.dumps({
-        "model_config": {"n_layers": 3},
-        "lr": 0.1,
-        "name": "identity",
-        "lr_step_fn": "msup.cli.ex_other_callable",
-        "num_workers": 42,
-    })
-
-    args = _parse_args(TrainArgs, ["--Args", config])
-
-    assert args.model_config.n_layers == 3
-    assert args.lr == 0.1
-    assert args.name == "identity"
-    assert args.lr_step_fn is not None
-    assert args.num_workers == 42
+def optional_list_command(args: OptionalListArgs):
+    received.append(args)
 
 
-def test_explicit_cli_values_override_config():
-    config = json.dumps({
-        "model_config": {"n_layers": 3},
-        "lr": 0.1,
-        "name": "identity",
-        "num_workers": 42,
-    })
-
-    args = _parse_args(TrainArgs, ["--Args", config, "--lr", "0.2", "--model_config.n_layers", "7"])
-
-    assert args.model_config.n_layers == 7
-    assert args.lr == 0.2
-    assert args.name == "identity"
-    assert args.num_workers == 42
+def reversed_optional_list_command(args: ReversedOptionalListArgs):
+    received.append(args)
 
 
-def test_required_fields_can_come_from_config():
-    args = _parse_args(RequiredArgs, ["--Args", '{"name":"cfg-name"}'])
-
-    assert args.name == "cfg-name"
-    assert args.count == 3
+def typing_optional_list_command(args: TypingOptionalListArgs):
+    received.append(args)
 
 
-def test_missing_required_field_still_errors():
-    parser = argparse.ArgumentParser()
-    _add_args(parser, RequiredArgs)
-    namespace = parser.parse_args([])
-
-    try:
-        with contextlib.redirect_stderr(io.StringIO()):
-            _from_cli_args(RequiredArgs, namespace)
-    except SystemExit:
-        return
-
-    assert False, "expected missing required field to raise SystemExit"
+def primitive_command(args: PrimitiveArgs):
+    received.append(args)
 
 
-def test_nested_bool_defaults_are_preserved():
-    args = _parse_args(NestedBoolArgs, [])
-
-    assert args.nested.enabled is False
-    assert args.nested.keep is True
+def collection_command(args: CollectionArgs):
+    received.append(args)
 
 
-def test_nested_bool_cli_values_are_parsed():
-    args = _parse_args(NestedBoolArgs, ["--nested.enabled", "true", "--nested.keep", "false"])
-
-    assert args.nested.enabled is True
-    assert args.nested.keep is False
+def structured_command(args: StructuredArgs):
+    received.append(args)
 
 
-def test_optional_callable_cli_value_is_loaded():
-    args = _parse_args(OptionalCallableArgs, ["--x", "msup.cli.ex_default_callable"])
-
-    assert args.x is ex_default_callable
+def any_command(args: AnyArgs):
+    received.append(args)
 
 
-def test_env_default_is_used_when_cli_arg_is_missing():
-    old_value = os.environ.get("MSUP_TEST_NAME")
-    os.environ["MSUP_TEST_NAME"] = "from-env"
+def parser_variants_command(args: ParserVariantsArgs):
+    received.append(args)
 
-    try:
-        args = _parse_args(EnvArgs, [])
-    finally:
-        if old_value is None:
-            del os.environ["MSUP_TEST_NAME"]
+
+def remainder_command(args: RemainderArgs):
+    received.append(args)
+
+
+def prefix_remainder_command(args: PrefixRemainderArgs):
+    received.append(args)
+
+
+def required_command(args: RequiredArgs):
+    received.append(args)
+
+
+def source_command(args: SourceArgs):
+    received.append(args)
+
+
+def help_command(args: HelpArgs):
+    received.append(args)
+
+
+def environment_bool_command(args: EnvironmentBoolArgs):
+    received.append(args)
+
+
+def nested_command(args: NestedArgs):
+    received.append(args)
+
+
+def unsupported_union_command(args: UnsupportedUnionArgs):
+    received.append(args)
+
+
+def fixed_tuple_command(args: FixedTupleArgs):
+    received.append(args)
+
+
+def enum_command(args: EnumArgs):
+    received.append(args)
+
+
+def subcommand(args: SubcommandArgs):
+    received.append(args)
+
+
+class CliContractTests(unittest.TestCase):
+    def setUp(self):
+        self.old_argv = sys.argv
+        self.old_selected = os.environ.pop("MSUP_TEST_SELECTED", None)
+        self.old_enabled = os.environ.pop("MSUP_TEST_ENABLED", None)
+        self.old_help_visible = os.environ.pop("MSUP_TEST_HELP_VISIBLE", None)
+        self.old_help_secret = os.environ.pop("MSUP_TEST_HELP_SECRET", None)
+        received.clear()
+
+    def tearDown(self):
+        sys.argv = self.old_argv
+        if self.old_selected is None:
+            os.environ.pop("MSUP_TEST_SELECTED", None)
         else:
-            os.environ["MSUP_TEST_NAME"] = old_value
+            os.environ["MSUP_TEST_SELECTED"] = self.old_selected
+        if self.old_enabled is None:
+            os.environ.pop("MSUP_TEST_ENABLED", None)
+        else:
+            os.environ["MSUP_TEST_ENABLED"] = self.old_enabled
+        if self.old_help_visible is None:
+            os.environ.pop("MSUP_TEST_HELP_VISIBLE", None)
+        else:
+            os.environ["MSUP_TEST_HELP_VISIBLE"] = self.old_help_visible
+        if self.old_help_secret is None:
+            os.environ.pop("MSUP_TEST_HELP_SECRET", None)
+        else:
+            os.environ["MSUP_TEST_HELP_SECRET"] = self.old_help_secret
+        received.clear()
 
-    assert args.name == "from-env"
+    def invoke(self, command, argv, **kwargs):
+        sys.argv = ["program", *argv]
+        cli(command, **kwargs)
+        return received.pop()
 
+    def test_optional_lists_preserve_all_supported_annotation_forms(self):
+        cases = [
+            (optional_list_command, OptionalListArgs),
+            (reversed_optional_list_command, ReversedOptionalListArgs),
+            (typing_optional_list_command, TypingOptionalListArgs),
+        ]
+        for command, args_type in cases:
+            with self.subTest(args_type=args_type):
+                self.assertEqual(self.invoke(command, ["--values", "1", "2"]), args_type(values=[1, 2]))
+        self.assertEqual(self.invoke(optional_list_command, []), OptionalListArgs(values=None))
+        self.assertEqual(self.invoke(optional_list_command, ["--values"]), OptionalListArgs(values=[]))
 
-def test_dict_cli_value_is_loaded_from_json():
-    args = _parse_args(DictArgs, ["--mapping", '{"a": 1, "b": 2}'])
+    def test_direct_primitives_convert_true_and_false(self):
+        for value, expected in [("true", True), ("false", False)]:
+            with self.subTest(value=value):
+                result = self.invoke(primitive_command, ["--count", "4", "--ratio", "2.5", "--name", "updated", "--enabled", value])
+                self.assertEqual(result, PrimitiveArgs(count=4, ratio=2.5, name="updated", enabled=expected))
 
-    assert args.mapping == {"a": 1, "b": 2}
+    def test_argument_type_is_public_and_uses_strtobool(self):
+        self.assertIs(argument_type(bool, "enabled"), strtobool)
+        self.assertTrue(argument_type(bool, "enabled")("yes"))
 
+    def test_invalid_direct_boolean_is_rejected(self):
+        output = StringIO()
+        with redirect_stderr(output), self.assertRaises(SystemExit) as error:
+            self.invoke(primitive_command, ["--enabled", "not-a-boolean"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("--enabled", output.getvalue())
+        self.assertIn("not-a-boolean", output.getvalue())
 
-def test_nested_dataclass_cli_value_can_be_passed_as_json():
-    args = _parse_args(NestedBoolArgs, ["--nested", '{"enabled": true, "keep": false}'])
+    def test_collections_convert_elements_and_accept_multiple_values(self):
+        result = self.invoke(collection_command, ["--numbers", "1", "2", "--labels", "one", "two", "--coordinates", "3", "4"])
+        self.assertEqual(result, CollectionArgs(numbers=[1, 2], labels=["one", "two"], coordinates=(3, 4)))
 
-    assert args.nested.enabled is True
-    assert args.nested.keep is False
+    def test_structured_values_parse_from_json_and_callable_paths(self):
+        result = self.invoke(structured_command, ["--values", '{"one": 1}', "--child", '{"count": 4}', "--transform", f"{__name__}.callback"])
+        self.assertEqual(result.values, {"one": 1})
+        self.assertEqual(result.child, ChildArgs(count=4))
+        self.assertIs(result.transform, callback)
 
+    def test_any_is_parsed_as_a_string(self):
+        self.assertEqual(self.invoke(any_command, ["--value", "41"]), AnyArgs(value="41"))
 
-def test_positional_short_and_list_args_are_parsed():
-    args = _parse_args(ParserVariantsArgs, ["positional-name", "-v", "1", "2", "3", "-f"])
+    def test_short_options_positional_and_list_arguments_are_parsed(self):
+        result = self.invoke(parser_variants_command, ["positional-name", "-v", "1", "2", "3", "-f"])
+        self.assertEqual(result, ParserVariantsArgs(name="positional-name", values=[1, 2, 3], enabled=True))
 
-    assert args.name == "positional-name"
-    assert args.values == [1, 2, 3]
-    assert args.flag is True
+    def test_positional_remainder_captures_all_arguments(self):
+        self.assertEqual(self.invoke(remainder_command, ["one", "two", "three"]), RemainderArgs(extra=["one", "two", "three"]))
+        self.assertEqual(self.invoke(remainder_command, ["--a", "test"]), RemainderArgs(extra=["--a", "test"]))
+        self.assertEqual(
+            self.invoke(prefix_remainder_command, ["first", "--a", "test"]),
+            PrefixRemainderArgs(prefix="first", extra=["--a", "test"]),
+        )
+        self.assertEqual(
+            self.invoke(prefix_remainder_command, ["--a", "test"]),
+            PrefixRemainderArgs(prefix="", extra=["--a", "test"]),
+        )
+        self.assertEqual(
+            self.invoke(prefix_remainder_command, ["--prefix", "first", "--a", "test"]),
+            PrefixRemainderArgs(prefix="first", extra=["--a", "test"]),
+        )
 
+    def test_unknown_options_without_a_positional_remainder_are_rejected(self):
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as error:
+            self.invoke(primitive_command, ["--a", "test"])
+        self.assertEqual(error.exception.code, 2)
 
-def test_cli_runs_single_command_with_positional_config():
-    seen = []
+    def test_required_values_can_come_from_configuration_and_are_enforced(self):
+        self.assertEqual(self.invoke(required_command, ['--Args', '{"name": "cfg-name"}']), RequiredArgs(name="cfg-name"))
+        with self.assertRaises(SystemExit) as error:
+            self.invoke(required_command, [])
+        self.assertEqual(error.exception.code, 3)
 
-    def run(args: CliRunArgs):
-        seen.append(args)
+    def test_configuration_environment_and_cli_follow_source_precedence(self):
+        config = '{"selected": 3, "from_config": 4}'
+        self.assertEqual(self.invoke(source_command, ["--Args", config]), SourceArgs(selected=3, from_config=4, default_only="default"))
+        os.environ["MSUP_TEST_SELECTED"] = "7"
+        self.assertEqual(self.invoke(source_command, ["--Args", config]), SourceArgs(selected=7, from_config=4, default_only="default"))
+        self.assertEqual(self.invoke(source_command, ["--Args", config, "--selected", "9"]), SourceArgs(selected=9, from_config=4, default_only="default"))
 
-    old_argv = sys.argv
-    sys.argv = ["prog", '{"name": "positional", "count": 2}']
+    def test_configuration_booleans_are_converted(self):
+        cases = [
+            ('{"enabled": true}', True),
+            ('{"enabled": false}', False),
+            ('{"enabled": "true"}', True),
+            ('{"enabled": "false"}', False),
+        ]
+        for config, expected in cases:
+            with self.subTest(config=config):
+                self.assertEqual(self.invoke(primitive_command, ["--Args", config]), PrimitiveArgs(enabled=expected))
 
-    try:
-        cli(run, pos_arg_config=True)
-    finally:
-        sys.argv = old_argv
+    def test_environment_boolean_false_is_converted(self):
+        os.environ["MSUP_TEST_ENABLED"] = "false"
+        self.assertEqual(self.invoke(environment_bool_command, []), EnvironmentBoolArgs(enabled=False))
 
-    assert seen == [CliRunArgs(name="positional", count=2)]
+    def test_positional_configuration_is_loaded(self):
+        result = self.invoke(source_command, ['{"selected": 3, "from_config": 4}'], pos_arg_config=True)
+        self.assertEqual(result, SourceArgs(selected=3, from_config=4, default_only="default"))
 
+    def test_help_shows_normal_defaults_but_hides_secret_values(self):
+        os.environ["MSUP_TEST_HELP_VISIBLE"] = "visible environment value"
+        os.environ["MSUP_TEST_HELP_SECRET"] = "secret environment value"
+        sys.argv = ["program", "--help"]
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as error:
+            cli(help_command)
+        self.assertEqual(error.exception.code, 0)
+        help_text = output.getvalue()
+        self.assertIn("Default: visible default", help_text)
+        self.assertIn("visible environment value", help_text)
+        self.assertNotIn("secret default", help_text)
+        self.assertNotIn("secret environment default", help_text)
+        self.assertNotIn("secret environment value", help_text)
 
-def test_cli_runs_subcommand():
-    seen = []
+    def test_dotted_nested_option_overrides_nested_configuration(self):
+        result = self.invoke(nested_command, ["--Args", '{"child": {"count": 2}}', "--child.count", "4"])
+        self.assertEqual(result, NestedArgs(child=ChildArgs(count=4)))
 
-    def train(args: CliRunArgs):
-        seen.append(args)
+    def test_unsupported_annotations_report_the_field_and_annotation(self):
+        cases = [
+            (unsupported_union_command, r"value.*int.*str"),
+            (fixed_tuple_command, r"coordinates.*tuple.*int.*str"),
+            (enum_command, r"choice.*unsupported CLI annotation.*Choice"),
+        ]
+        for command, message in cases:
+            with self.subTest(command=command.__name__):
+                sys.argv = ["program"]
+                with self.assertRaisesRegex(TypeError, message):
+                    cli(command)
 
-    old_argv = sys.argv
-    sys.argv = ["prog", "train", "--name", "sub", "--count", "4"]
+    def test_subcommand_uses_the_selected_command_parser(self):
+        sys.argv = ["program", "subcommand", "--value", "4"]
+        cli({subcommand: "run the subcommand"})
+        self.assertEqual(received.pop(), SubcommandArgs(value=4))
 
-    try:
-        cli({train: "training command"})
-    finally:
-        sys.argv = old_argv
-
-    assert seen == [CliRunArgs(name="sub", count=4)]
-
-
-def test_cli_prints_help_when_no_subcommand_is_selected():
-    def train(args: CliRunArgs):
-        raise AssertionError("train should not be called when no subcommand is selected")
-
-    stdout = io.StringIO()
-    old_argv = sys.argv
-    sys.argv = ["prog"]
-
-    try:
-        with contextlib.redirect_stdout(stdout):
-            cli({train: "training command"})
-    finally:
-        sys.argv = old_argv
-
-    assert "subcommand help" in stdout.getvalue()
-
-
-def test_get_first_arg_rejects_non_dataclass_annotations():
-    def bad(x: int):
-        return x
-
-    try:
-        _get_first_arg(bad)
-    except TypeError as exc:
-        assert "First argument for bad is not a dataclass" in str(exc)
-        return
-
-    assert False, "expected _get_first_arg to reject non-dataclass first arguments"
-
-
-def test_to_bool_rejects_invalid_values():
-    try:
-        to_bool("maybe")
-    except ValueError as exc:
-        assert "Invalid truth value" in str(exc)
-        return
-
-    assert False, "expected to_bool to reject invalid input"
+    def test_subcommands_without_a_selection_print_help_without_invoking_a_handler(self):
+        sys.argv = ["program"]
+        output = StringIO()
+        with redirect_stdout(output):
+            cli({subcommand: "run the subcommand"})
+        self.assertIn("subcommand", output.getvalue())
+        self.assertEqual(received, [])
 
 
 if __name__ == "__main__":
-    test_args_config_overrides_dataclass_defaults()
-    test_explicit_cli_values_override_config()
-    test_required_fields_can_come_from_config()
-    test_missing_required_field_still_errors()
-    test_nested_bool_defaults_are_preserved()
-    test_nested_bool_cli_values_are_parsed()
-    test_optional_callable_cli_value_is_loaded()
-    test_env_default_is_used_when_cli_arg_is_missing()
-    test_dict_cli_value_is_loaded_from_json()
-    test_nested_dataclass_cli_value_can_be_passed_as_json()
-    test_positional_short_and_list_args_are_parsed()
-    test_cli_runs_single_command_with_positional_config()
-    test_cli_runs_subcommand()
-    test_cli_prints_help_when_no_subcommand_is_selected()
-    test_get_first_arg_rejects_non_dataclass_annotations()
-    test_to_bool_rejects_invalid_values()
+    unittest.main()
