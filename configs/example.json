@@ -5,7 +5,7 @@
   },
   "lr": 0.01,
   "name": "example",
-  "lr_step_fn": "__main__.cosine_warmup_lr_step",
+  "lr_step_fn": "examples.cli.callbacks.cosine_warmup_lr_step",
   "num_workers": -1,
   "cont": false,
   "config_root_dir": "./configs"
