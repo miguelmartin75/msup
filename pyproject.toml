@@ -18,7 +18,9 @@ keywords = ["serialization", "encode", "dataclass", "cli", "argparse"]
 dev = [
     "pytest>=8.4.1",
     "pytest-cov>=6.2.1",
+    "ruff>=0.15.22",
     "twine>=6.1.0",
+    "ty>=0.0.61",
 ]
 
 [tool.ruff]
@@ -29,6 +31,10 @@ src = [
     "tests",
     "examples",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"msup/base.py" = ["F811"]
+"msup/cli.py" = ["F811"]
 
 [tool.ruff.format]
 docstring-code-format = true
