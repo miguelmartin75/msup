@@ -5,7 +5,7 @@ import os
 from collections.abc import Callable as Callable2
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from types import UnionType
-from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
 T = TypeVar("T")
 
@@ -13,13 +13,49 @@ T = TypeVar("T")
 def to_kwargs(clazz: type, x: T) -> dict: ...
 def from_dict(clazz: type, x: dict) -> T: ...
 def to_dict(x: T) -> dict: ...
+def is_structured_model(candidate: type | object) -> bool: ...
 
 
 @dataclass
-class InitArg:
+class _FieldInfo:
     name: str
+    annotation: Any
     default: Any = MISSING
-    type: Any = None
+    default_factory: Any = MISSING
+
+
+def _unwrap_annotated(annotation: Any) -> Any:
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    return annotation
+
+
+def _is_pydantic_model(candidate: type | object) -> bool:
+    clazz = candidate if inspect.isclass(candidate) else type(candidate)
+    try:
+        import pydantic
+    except ImportError:
+        result = False
+    else:
+        if issubclass(clazz, pydantic.BaseModel):
+            if pydantic.VERSION.split(".", 1)[0] != "2" or not hasattr(clazz, "model_fields"):
+                raise TypeError(f"Pydantic v1 models are not supported: {clazz}")
+            result = True
+        else:
+            try:
+                from pydantic.v1 import BaseModel as PydanticV1BaseModel
+            except ImportError:
+                result = False
+            else:
+                if issubclass(clazz, PydanticV1BaseModel):
+                    raise TypeError(f"Pydantic v1 models are not supported: {clazz}")
+                result = False
+    return result
+
+
+def is_structured_model(candidate: type | object) -> bool:
+    result = is_dataclass(candidate) or _is_pydantic_model(candidate)
+    return result
 
 
 def from_json(clazz: type, s: str | None = None, file_like=None, path: str | None = None) -> T:
@@ -58,10 +94,29 @@ def has_default_value(f):
 def fields_or_init_kwargs(clazz: type):
     assert inspect.isclass(clazz), f"{clazz} is not a class"
     if is_dataclass(clazz):
-        result = list(fields(clazz))
+        hints = get_type_hints(clazz, include_extras=True)
+        result = []
+        for field in fields(clazz):
+            annotation = _unwrap_annotated(hints.get(field.name, field.type))
+            result.append(
+                _FieldInfo(
+                    field.name,
+                    annotation,
+                    field.default,
+                    field.default_factory,
+                )
+            )
+    elif _is_pydantic_model(clazz):
+        hints = get_type_hints(clazz, include_extras=True)
+        result = []
+        for name, model_field in clazz.model_fields.items():
+            default = MISSING if model_field.is_required() else model_field.default
+            default_factory = model_field.default_factory if model_field.default_factory is not None else MISSING
+            annotation = _unwrap_annotated(hints.get(name, model_field.annotation))
+            result.append(_FieldInfo(name, annotation, default, default_factory))
     else:
         signature = inspect.signature(clazz.__init__)
-        hints = get_type_hints(clazz.__init__)
+        hints = get_type_hints(clazz.__init__, include_extras=True)
         result = []
         for name, parameter in signature.parameters.items():
             if name in ("self", "cls"):
@@ -69,7 +124,10 @@ def fields_or_init_kwargs(clazz: type):
             if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
                 continue
             default = MISSING if parameter.default is inspect._empty else parameter.default
-            result.append(InitArg(name, default, hints.get(name)))
+            annotation = _unwrap_annotated(hints.get(name, parameter.annotation))
+            if annotation is inspect._empty:
+                annotation = None
+            result.append(_FieldInfo(name, annotation, default, MISSING))
     return result
 
 
@@ -87,6 +145,7 @@ def maybe_idx(xs: list, idx: int, default: Any = None) -> Any:
 
 
 def get_optional_type(annotation: type) -> type | None:
+    annotation = _unwrap_annotated(annotation)
     args = get_args(annotation)
     if get_origin(annotation) in (Union, UnionType) and len(args) == 2 and type(None) in args:
         result = next(arg for arg in args if arg is not type(None))
@@ -96,6 +155,7 @@ def get_optional_type(annotation: type) -> type | None:
 
 
 def get_collection_args(annotation: type, count: int = 0) -> tuple[type, ...]:
+    annotation = _unwrap_annotated(annotation)
     origin = annotation_origin(annotation)
     args = get_args(annotation)
     if origin is dict:
@@ -120,10 +180,12 @@ def is_optional(annotation: type) -> bool:
 
 
 def annotation_origin(annotation: type) -> type:
+    annotation = _unwrap_annotated(annotation)
     return get_origin(annotation) or annotation
 
 
 def effective_type(annotation: type, field_name: str) -> type:
+    annotation = _unwrap_annotated(annotation)
     optional_type = get_optional_type(annotation)
     if optional_type is not None:
         result = optional_type
@@ -172,7 +234,7 @@ def is_compat(field_type: type, concrete_type: type) -> tuple[bool, type | None]
             return True, result
         elif field_type is Any:
             return True, Any
-        elif is_dataclass(field_type):
+        elif is_structured_model(field_type):
             result = concrete_origin in (field_type, dict, str)
             return result, field_type if result else None
         elif origin is dict:
@@ -233,7 +295,7 @@ def from_dict_value(x: T, field_type: type, concrete_type: type, field_name: str
                     raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
             if field_type is Any:
                 result = x
-            elif is_dataclass(field_type):
+            elif is_structured_model(field_type):
                 if concrete_type is field_type:
                     result = x
                 elif isinstance(x, str):
@@ -289,7 +351,7 @@ def to_dict_value(x: T, field_type: type):
         return to_dict_value(x, member)
     elif field_type is Any:
         return x
-    elif is_dataclass(x):
+    elif is_structured_model(x):
         return to_dict(x)
     elif origin is dict:
         key_type, value_type = get_collection_args(field_type)
@@ -312,13 +374,11 @@ def to_dict_value(x: T, field_type: type):
 
 
 def to_dict(x: T) -> dict:
-    hints = get_type_hints(type(x)) if is_dataclass(x) else {}
     result = {}
     for f in fields_or_init_kwargs(type(x)):
         if hasattr(x, f.name):
-            field_type = hints.get(f.name, f.type)
             value = getattr(x, f.name)
-            result[f.name] = to_dict_value(value, field_type or type(value))
+            result[f.name] = to_dict_value(value, f.annotation or type(value))
     return result
 
 
@@ -334,10 +394,9 @@ def to_kwargs(clazz: type, x: T) -> dict:
 
 
 def from_dict(clazz: type, x: dict) -> T:
-    hints = get_type_hints(clazz) if is_dataclass(clazz) else {}
     construct_args = {}
     for f in fields_or_init_kwargs(clazz):
-        field_type = hints.get(f.name, f.type)
         if f.name in x:
-            construct_args[f.name] = from_dict_value(x[f.name], field_type or type(x[f.name]), type(x[f.name]), f.name)
+            field_type = f.annotation or type(x[f.name])
+            construct_args[f.name] = from_dict_value(x[f.name], field_type, type(x[f.name]), f.name)
     return clazz(**construct_args)
