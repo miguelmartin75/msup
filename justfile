@@ -12,6 +12,14 @@ test:
 coverage:
     uv run --group dev pytest --cov=msup --cov-report=term-missing
 
+lint:
+    uv run --group dev ruff check .
+
+type:
+    uv run --group dev ty check .
+
+check: lint
+
 tag-release version:
     test -n "{{version}}"
     uv version "{{version}}" --frozen
