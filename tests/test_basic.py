@@ -3,12 +3,13 @@ from dataclasses import dataclass, field as dataclass_field
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Callable, Union
+from typing import Annotated, Any, Callable, Union
 
 from msup.base import (
     dict_from_str, effective_type, from_dict, from_dict_value, from_json,
     is_compat, to_dict, to_dict_value, to_json, to_kwargs,
 )
+from msup.cli import CliArg
 
 
 @dataclass
@@ -19,14 +20,14 @@ class Nested:
 
 @dataclass
 class ConversionValues:
-    nested: Nested | None = None
-    raw: dict | None = None
-    values: list[int] | None = None
-    pair: tuple[int, str] = (0, "")
-    mapping: dict[int, list[float]] | None = None
-    anything: list[Any] | None = None
-    enabled: bool = False
-    primitive: Union[int, None] = 3
+    nested: Annotated[Nested | None, CliArg()] = None
+    raw: Annotated[dict | None, CliArg()] = None
+    values: Annotated[list[int] | None, CliArg()] = None
+    pair: Annotated[tuple[int, str], CliArg()] = (0, "")
+    mapping: Annotated[dict[int, list[float]] | None, CliArg()] = None
+    anything: Annotated[list[Any] | None, CliArg()] = None
+    enabled: Annotated[bool, CliArg()] = False
+    primitive: Annotated[Union[int, None], CliArg()] = 3
 
 
 @dataclass
@@ -39,11 +40,11 @@ class Defaults:
 
 @dataclass
 class CallableValue:
-    callback: Callable[[int], int]
+    callback: Annotated[Callable[[int], int], CliArg()]
 
 
 class BasicClass:
-    def __init__(self, name: str, count: int | None = None):
+    def __init__(self, name: Annotated[str, CliArg(help="ignored")], count: int | None = None):
         self.name = name
         self.count = count
 

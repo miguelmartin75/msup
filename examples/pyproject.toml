@@ -1,0 +1,14 @@
+[project]
+name = "msup-examples"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "msup[pydantic]",
+    "torch>=2",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+msup = { path = "..", editable = true }

@@ -3,12 +3,12 @@ import os
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import dataclass, field
+from dataclasses import FrozenInstanceError, dataclass, field
 from enum import Enum
 from io import StringIO
-from typing import Any, Callable, Optional
+from typing import Annotated, Any, Callable, Optional
 
-from msup.cli import _from_cli_args, argument_type, cli, cliarg, strtobool
+from msup.cli import CliArg, _from_cli_args, argument_type, cli, strtobool
 
 
 received = []
@@ -67,20 +67,20 @@ class AnyArgs:
 
 @dataclass
 class ParserVariantsArgs:
-    name: str = cliarg(pos=True, short="n")
-    values: list[int] = cliarg(default_factory=list, short="v")
-    enabled: bool = cliarg(default=False, short="f")
+    name: Annotated[str, CliArg(pos=True, short="n")]
+    values: Annotated[list[int], CliArg(short="v")] = field(default_factory=list)
+    enabled: Annotated[bool, CliArg(short="f")] = False
 
 
 @dataclass
 class RemainderArgs:
-    extra: list[str] = cliarg(pos=True, opt=False, default_factory=list)
+    extra: Annotated[list[str], CliArg(pos=True, opt=False)] = field(default_factory=list)
 
 
 @dataclass
 class PrefixRemainderArgs:
-    prefix: str = cliarg(pos=True, default="")
-    extra: list[str] = cliarg(pos=True, opt=False, default_factory=list)
+    prefix: Annotated[str, CliArg(pos=True)] = ""
+    extra: Annotated[list[str], CliArg(pos=True, opt=False)] = field(default_factory=list)
 
 
 @dataclass
@@ -91,7 +91,7 @@ class RequiredArgs:
 
 @dataclass
 class SourceArgs:
-    selected: int = cliarg(env="MSUP_TEST_SELECTED", default=1)
+    selected: Annotated[int, CliArg(env="MSUP_TEST_SELECTED")] = 1
     from_config: int = 2
     default_only: str = "default"
 
@@ -99,14 +99,14 @@ class SourceArgs:
 @dataclass
 class HelpArgs:
     visible: str = "visible default"
-    secret: str = cliarg(secret=True, default="secret default")
-    environment: str = cliarg(env="MSUP_TEST_HELP_VISIBLE", default="environment default")
-    secret_environment: str = cliarg(env="MSUP_TEST_HELP_SECRET", secret=True, default="secret environment default")
+    secret: Annotated[str, CliArg(secret=True)] = "secret default"
+    environment: Annotated[str, CliArg(env="MSUP_TEST_HELP_VISIBLE")] = "environment default"
+    secret_environment: Annotated[str, CliArg(env="MSUP_TEST_HELP_SECRET", secret=True)] = "secret environment default"
 
 
 @dataclass
 class EnvironmentBoolArgs:
-    enabled: bool = cliarg(env="MSUP_TEST_ENABLED", default=False)
+    enabled: Annotated[bool, CliArg(env="MSUP_TEST_ENABLED")] = False
 
 
 @dataclass
@@ -116,18 +116,23 @@ class NestedArgs:
 
 @dataclass
 class EnvironmentNestedArgs:
-    child: ChildArgs = cliarg(env="MSUP_TEST_CHILD", default_factory=ChildArgs)
+    child: Annotated[ChildArgs, CliArg(env="MSUP_TEST_CHILD")] = field(default_factory=ChildArgs)
 
 
 @dataclass
 class NonfinalPositionalCollectionArgs:
-    values: list[str] = cliarg(pos=True, default_factory=list)
+    values: Annotated[list[str], CliArg(pos=True)] = field(default_factory=list)
     name: str = "default"
 
 
 @dataclass
 class InvalidShortOptionArgs:
-    name: str = cliarg(short="--name", default="default")
+    name: Annotated[str, CliArg(short="--name")] = "default"
+
+
+@dataclass
+class UnrelatedMetadataArgs:
+    value: Annotated[int, "unrelated", CliArg(short="v")] = 1
 
 
 @dataclass
@@ -226,6 +231,10 @@ def invalid_short_option_command(args: InvalidShortOptionArgs):
     received.append(args)
 
 
+def unrelated_metadata_command(args: UnrelatedMetadataArgs):
+    received.append(args)
+
+
 def unsupported_union_command(args: UnsupportedUnionArgs):
     received.append(args)
 
@@ -302,6 +311,20 @@ class CliContractTests(unittest.TestCase):
     def test_argument_type_is_public_and_uses_strtobool(self):
         self.assertIs(argument_type(bool, "enabled"), strtobool)
         self.assertTrue(argument_type(bool, "enabled")("yes"))
+
+    def test_cliarg_accepts_no_short_option_and_is_immutable(self):
+        self.assertIsNone(CliArg().short)
+        self.assertEqual(CliArg(short="v").short, "v")
+
+        cli_arg = CliArg(short="v")
+        with self.assertRaises(FrozenInstanceError):
+            cli_arg.short = "x"
+
+    def test_unrelated_annotated_metadata_is_ignored(self):
+        self.assertEqual(
+            self.invoke(unrelated_metadata_command, ["-v", "4"]),
+            UnrelatedMetadataArgs(value=4),
+        )
 
     def test_invalid_direct_boolean_is_rejected(self):
         output = StringIO()
@@ -416,6 +439,17 @@ class CliContractTests(unittest.TestCase):
     def test_short_options_must_not_use_long_option_syntax(self):
         with self.assertRaisesRegex(TypeError, "name: short options must not start with --"):
             cli(invalid_short_option_command)
+
+    def test_duplicate_cliarg_metadata_is_rejected(self):
+        @dataclass
+        class DuplicateCliArgArgs:
+            value: Annotated[int, CliArg(help="first"), CliArg(help="second")] = 1
+
+        def duplicate_cliarg_command(args: DuplicateCliArgArgs):
+            received.append(args)
+
+        with self.assertRaisesRegex(TypeError, "at most one CliArg"):
+            cli(duplicate_cliarg_command)
 
     def test_command_handlers_require_a_dataclass_first_argument(self):
         def invalid_command(value: int):
