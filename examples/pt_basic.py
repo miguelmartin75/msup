@@ -5,8 +5,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from msup.base import load_callable, to_kwargs
 from msup.cli import cli, cliarg
-from msup.base import to_kwargs, load_callable
 
 
 @dataclass
@@ -15,10 +15,12 @@ class ModelConfig:
     n_layers: int = cliarg(help="number of layers for the model", default=10)
     checkpoint_path: str | None = cliarg(short="-chkpt", help="path of the checkpoint", default=None)
 
+
 @dataclass
 class TrainConfig:
     model: ModelConfig = cliarg(help="model to use", default_factory=ModelConfig)
     lr: float = 0.1  # NOTE: not realistic, for testing
+
 
 @dataclass
 class TrainConfigAdvanced:
@@ -26,11 +28,13 @@ class TrainConfigAdvanced:
     lr: float = 0.1  # NOTE: not realistic, for testing
     optim: Callable = torch.optim.SGD
 
+
 @dataclass
 class TrainConfigAdvancedAlt:
     model: ModelConfig = cliarg(help="model to use", default_factory=ModelConfig)
     lr: float = 0.1  # NOTE: not realistic, for testing
     optim: str = "SGD"
+
 
 class MyModel(nn.Module):
     def __init__(self, config: ModelConfig):
@@ -46,7 +50,6 @@ class MyModel(nn.Module):
             x = layer(x) + x
         return x
 
-# the same as above, but with arguments
 class MyModelKwargs(nn.Module):
     def __init__(self, n_layers: int, dim: int):
         super().__init__()
@@ -62,18 +65,19 @@ class MyModelKwargs(nn.Module):
             x = layer(x) + x
         return x
 
+
 def test_optim(config: TrainConfig):
     model = MyModel(config.model)
     optimizer = optim.Adam(model.parameters(), **to_kwargs(optim.Adam, config))
     assert optimizer.state_dict()["param_groups"][0]["lr"] == config.lr
     print(optimizer)
 
+
 def test_optim_advanced(config: TrainConfigAdvanced):
     model = MyModel(config.model)
     optimizer = config.optim(model.parameters(), **to_kwargs(config.optim, config))
     assert optimizer.state_dict()["param_groups"][0]["lr"] == config.lr
     print(optimizer)
-
 
 def test_optim_advanced_alt(config: TrainConfigAdvancedAlt):
     model = MyModel(config.model)
@@ -82,6 +86,7 @@ def test_optim_advanced_alt(config: TrainConfigAdvancedAlt):
     assert optimizer.state_dict()["param_groups"][0]["lr"] == config.lr
     print(optimizer)
 
+
 def test_model(config: ModelConfig):
     model = MyModelKwargs(**to_kwargs(MyModelKwargs, config))
     model_config = MyModel(config)
@@ -89,6 +94,7 @@ def test_model(config: ModelConfig):
     assert model_config.config.n_layers == model.n_layers
     assert len(model_config.layers) == len(model.layers)
     print(model)
+
 
 if __name__ == "__main__":
     cli({
