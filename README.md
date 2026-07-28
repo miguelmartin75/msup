@@ -35,8 +35,6 @@ Serialization and de-serialization of:
       - JSON object, e.g. `'{"x": 3, "name": "abc"}'`
       - JSON file, e.g. `myfile.json`
     - CLI collection fields and final positional argument capture
-    - CLI JSON configuration with CLI, environment, config, and default precedence
-    - TODO: in a future version, hooks will be added to support other serialization formats such as YAML
 - other Python classes with `__init__`, e.g. `torch.optim.Adam` (see [examples/pt_basic.py](./examples/pt_basic.py))
 
 # TODOs
