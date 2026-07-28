@@ -1,14 +1,15 @@
 from argparse import Namespace
 import os
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import dataclass, field
+from dataclasses import FrozenInstanceError, dataclass, field
 from enum import Enum
 from io import StringIO
-from typing import Any, Callable, Optional
+from typing import Annotated, Any, Callable, Optional
 
-from msup.cli import _from_cli_args, argument_type, cli, cliarg, strtobool
+from msup.cli import CliArg, _from_cli_args, argument_type, cli, strtobool
 
 
 received = []
@@ -67,20 +68,20 @@ class AnyArgs:
 
 @dataclass
 class ParserVariantsArgs:
-    name: str = cliarg(pos=True, short="n")
-    values: list[int] = cliarg(default_factory=list, short="v")
-    enabled: bool = cliarg(default=False, short="f")
+    name: Annotated[str, CliArg(pos=True, short="n")]
+    values: Annotated[list[int], CliArg(short="v")] = field(default_factory=list)
+    enabled: Annotated[bool, CliArg(short="f")] = False
 
 
 @dataclass
 class RemainderArgs:
-    extra: list[str] = cliarg(pos=True, opt=False, default_factory=list)
+    extra: Annotated[list[str], CliArg(pos=True, opt=False)] = field(default_factory=list)
 
 
 @dataclass
 class PrefixRemainderArgs:
-    prefix: str = cliarg(pos=True, default="")
-    extra: list[str] = cliarg(pos=True, opt=False, default_factory=list)
+    prefix: Annotated[str, CliArg(pos=True)] = ""
+    extra: Annotated[list[str], CliArg(pos=True, opt=False)] = field(default_factory=list)
 
 
 @dataclass
@@ -91,7 +92,7 @@ class RequiredArgs:
 
 @dataclass
 class SourceArgs:
-    selected: int = cliarg(env="MSUP_TEST_SELECTED", default=1)
+    selected: Annotated[int, CliArg(env="MSUP_TEST_SELECTED")] = 1
     from_config: int = 2
     default_only: str = "default"
 
@@ -99,14 +100,14 @@ class SourceArgs:
 @dataclass
 class HelpArgs:
     visible: str = "visible default"
-    secret: str = cliarg(secret=True, default="secret default")
-    environment: str = cliarg(env="MSUP_TEST_HELP_VISIBLE", default="environment default")
-    secret_environment: str = cliarg(env="MSUP_TEST_HELP_SECRET", secret=True, default="secret environment default")
+    secret: Annotated[str, CliArg(secret=True)] = "secret default"
+    environment: Annotated[str, CliArg(env="MSUP_TEST_HELP_VISIBLE")] = "environment default"
+    secret_environment: Annotated[str, CliArg(env="MSUP_TEST_HELP_SECRET", secret=True)] = "secret environment default"
 
 
 @dataclass
 class EnvironmentBoolArgs:
-    enabled: bool = cliarg(env="MSUP_TEST_ENABLED", default=False)
+    enabled: Annotated[bool, CliArg(env="MSUP_TEST_ENABLED")] = False
 
 
 @dataclass
@@ -115,19 +116,34 @@ class NestedArgs:
 
 
 @dataclass
+class DefaultNestedArgs:
+    child: ChildArgs = field(default_factory=lambda: ChildArgs(count=2))
+
+
+@dataclass
 class EnvironmentNestedArgs:
-    child: ChildArgs = cliarg(env="MSUP_TEST_CHILD", default_factory=ChildArgs)
+    child: Annotated[ChildArgs, CliArg(env="MSUP_TEST_CHILD")] = field(default_factory=ChildArgs)
 
 
 @dataclass
 class NonfinalPositionalCollectionArgs:
-    values: list[str] = cliarg(pos=True, default_factory=list)
+    values: Annotated[list[str], CliArg(pos=True)] = field(default_factory=list)
     name: str = "default"
 
 
 @dataclass
 class InvalidShortOptionArgs:
-    name: str = cliarg(short="--name", default="default")
+    name: Annotated[str, CliArg(short="--name")] = "default"
+
+
+@dataclass
+class EmptyShortOptionArgs:
+    value: Annotated[int, CliArg(short="")] = 1
+
+
+@dataclass
+class UnrelatedMetadataArgs:
+    value: Annotated[int, "unrelated", CliArg(short="v")] = 1
 
 
 @dataclass
@@ -214,6 +230,10 @@ def nested_command(args: NestedArgs):
     received.append(args)
 
 
+def default_nested_command(args: DefaultNestedArgs):
+    received.append(args)
+
+
 def environment_nested_command(args: EnvironmentNestedArgs):
     received.append(args)
 
@@ -223,6 +243,14 @@ def nonfinal_positional_collection_command(args: NonfinalPositionalCollectionArg
 
 
 def invalid_short_option_command(args: InvalidShortOptionArgs):
+    received.append(args)
+
+
+def empty_short_option_command(args: EmptyShortOptionArgs):
+    received.append(args)
+
+
+def unrelated_metadata_command(args: UnrelatedMetadataArgs):
     received.append(args)
 
 
@@ -242,6 +270,43 @@ def subcommand(args: SubcommandArgs):
     received.append(args)
 
 
+def direct_command(
+    count: Annotated[int, CliArg(help="item count", short="c", env="MSUP_TEST_DIRECT_COUNT")],
+    ratio: Annotated[float, CliArg(help="ratio")] = 1.5,
+    name: str = "default",
+    enabled: bool = False,
+    optional: int | None = None,
+    values: list[int] | None = None,
+    transform: Callable[[int], int] = callback,
+    mapping: dict[str, int] | None = None,
+    child: ChildArgs | None = None,
+):
+    received.append(
+        {
+            "count": count,
+            "ratio": ratio,
+            "name": name,
+            "enabled": enabled,
+            "optional": optional,
+            "values": values,
+            "transform": transform,
+            "mapping": mapping,
+            "child": child,
+        }
+    )
+
+
+def direct_positional_command(
+    name: Annotated[str, CliArg(pos=True)],
+    extra: Annotated[list[str] | None, CliArg(pos=True, opt=False)] = None,
+):
+    received.append((name, extra))
+
+
+def direct_subcommand(count: int, name: str = "default"):
+    received.append((count, name))
+
+
 class CliContractTests(unittest.TestCase):
     def setUp(self):
         self.old_argv = sys.argv
@@ -250,6 +315,7 @@ class CliContractTests(unittest.TestCase):
         self.old_help_visible = os.environ.pop("MSUP_TEST_HELP_VISIBLE", None)
         self.old_help_secret = os.environ.pop("MSUP_TEST_HELP_SECRET", None)
         self.old_child = os.environ.pop("MSUP_TEST_CHILD", None)
+        self.old_direct_count = os.environ.pop("MSUP_TEST_DIRECT_COUNT", None)
         received.clear()
 
     def tearDown(self):
@@ -274,6 +340,10 @@ class CliContractTests(unittest.TestCase):
             os.environ.pop("MSUP_TEST_CHILD", None)
         else:
             os.environ["MSUP_TEST_CHILD"] = self.old_child
+        if self.old_direct_count is None:
+            os.environ.pop("MSUP_TEST_DIRECT_COUNT", None)
+        else:
+            os.environ["MSUP_TEST_DIRECT_COUNT"] = self.old_direct_count
         received.clear()
 
     def invoke(self, command, argv, **kwargs):
@@ -303,6 +373,22 @@ class CliContractTests(unittest.TestCase):
         self.assertIs(argument_type(bool, "enabled"), strtobool)
         self.assertTrue(argument_type(bool, "enabled")("yes"))
 
+    def test_cliarg_accepts_no_short_option_and_is_immutable(self):
+        self.assertEqual(CliArg().short, "")
+        self.assertEqual(CliArg(short="").short, "")
+        self.assertIsNone(CliArg(short=None).short)
+        self.assertEqual(CliArg(short="v").short, "v")
+
+        cli_arg = CliArg(short="v")
+        with self.assertRaises(FrozenInstanceError):
+            cli_arg.short = "x"
+
+    def test_unrelated_annotated_metadata_is_ignored(self):
+        self.assertEqual(
+            self.invoke(unrelated_metadata_command, ["-v", "4"]),
+            UnrelatedMetadataArgs(value=4),
+        )
+
     def test_invalid_direct_boolean_is_rejected(self):
         output = StringIO()
         with redirect_stderr(output), self.assertRaises(SystemExit) as error:
@@ -327,6 +413,15 @@ class CliContractTests(unittest.TestCase):
     def test_short_options_positional_and_list_arguments_are_parsed(self):
         result = self.invoke(parser_variants_command, ["positional-name", "-v", "1", "2", "3", "-f"])
         self.assertEqual(result, ParserVariantsArgs(name="positional-name", values=[1, 2, 3], enabled=True))
+
+    def test_empty_short_option_registers_only_the_long_option(self):
+        self.assertEqual(
+            self.invoke(empty_short_option_command, ["--value", "4"]),
+            EmptyShortOptionArgs(value=4),
+        )
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as error:
+            self.invoke(empty_short_option_command, ["-", "4"])
+        self.assertEqual(error.exception.code, 2)
 
     def test_positional_remainder_captures_all_arguments(self):
         self.assertEqual(self.invoke(remainder_command, ["one", "two", "three"]), RemainderArgs(extra=["one", "two", "three"]))
@@ -405,6 +500,9 @@ class CliContractTests(unittest.TestCase):
         os.environ["MSUP_TEST_CHILD"] = '{"count": 7}'
         self.assertEqual(self.invoke(environment_nested_command, []), EnvironmentNestedArgs(child=ChildArgs(count=7)))
 
+    def test_nested_dataclass_preserves_declared_default_without_sources(self):
+        self.assertEqual(self.invoke(default_nested_command, []), DefaultNestedArgs(child=ChildArgs(count=2)))
+
     def test_nested_dataclass_accepts_dataclass_configuration_values(self):
         result = _from_cli_args(NestedArgs, Namespace(), {"child": ChildArgs(count=6)})
         self.assertEqual(result, NestedArgs(child=ChildArgs(count=6)))
@@ -417,12 +515,142 @@ class CliContractTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "name: short options must not start with --"):
             cli(invalid_short_option_command)
 
-    def test_command_handlers_require_a_dataclass_first_argument(self):
-        def invalid_command(value: int):
+    def test_duplicate_cliarg_metadata_is_rejected(self):
+        @dataclass
+        class DuplicateCliArgArgs:
+            value: Annotated[int, CliArg(help="first"), CliArg(help="second")] = 1
+
+        def duplicate_cliarg_command(args: DuplicateCliArgArgs):
+            received.append(args)
+
+        with self.assertRaisesRegex(TypeError, "at most one CliArg"):
+            cli(duplicate_cliarg_command)
+
+    def test_direct_parameters_convert_values_and_keep_python_defaults(self):
+        result = self.invoke(
+            direct_command,
+            [
+                "-c",
+                "4",
+                "--ratio",
+                "2.5",
+                "--name",
+                "updated",
+                "--enabled",
+                "true",
+                "--optional",
+                "3",
+                "--values",
+                "1",
+                "2",
+                "--transform",
+                f"{__name__}.callback",
+                "--mapping",
+                '{"one": 1}',
+                "--child",
+                '{"count": 6}',
+            ],
+        )
+        self.assertEqual(result["count"], 4)
+        self.assertEqual(result["ratio"], 2.5)
+        self.assertEqual(result["name"], "updated")
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["optional"], 3)
+        self.assertEqual(result["values"], [1, 2])
+        self.assertIs(result["transform"], callback)
+        self.assertEqual(result["mapping"], {"one": 1})
+        self.assertEqual(result["child"], ChildArgs(count=6))
+
+        defaults = self.invoke(direct_command, ["--Args", '{"count": 5}'])
+        self.assertEqual(defaults, {
+            "count": 5,
+            "ratio": 1.5,
+            "name": "default",
+            "enabled": False,
+            "optional": None,
+            "values": None,
+            "transform": callback,
+            "mapping": None,
+            "child": None,
+        })
+
+    def test_direct_parameters_support_help_args_environment_and_cli_precedence(self):
+        sys.argv = ["program", "--help"]
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as error:
+            cli(direct_command)
+        self.assertEqual(error.exception.code, 0)
+        self.assertIn("item count", output.getvalue())
+        self.assertIn("Default: 1.5", output.getvalue())
+
+        config = '{"count": 3, "ratio": 4.5}'
+        self.assertEqual(self.invoke(direct_command, ["--Args", config])["count"], 3)
+        os.environ["MSUP_TEST_DIRECT_COUNT"] = "7"
+        self.assertEqual(self.invoke(direct_command, ["--Args", config])["count"], 7)
+        self.assertEqual(self.invoke(direct_command, ["--Args", config, "--count", "9"])["count"], 9)
+
+    def test_direct_parameters_accept_configuration_and_structured_json_paths(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as config_file:
+            config_file.write('{"count": 6, "name": "from-path"}')
+            config_path = config_file.name
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as child_file:
+            child_file.write('{"count": 8}')
+            child_path = child_file.name
+        try:
+            result = self.invoke(direct_command, ["--Args", config_path, "--child", child_path])
+        finally:
+            os.unlink(config_path)
+            os.unlink(child_path)
+        self.assertEqual(result["count"], 6)
+        self.assertEqual(result["name"], "from-path")
+        self.assertEqual(result["child"], ChildArgs(count=8))
+
+    def test_direct_positional_parameters_allow_a_final_remainder(self):
+        self.assertEqual(
+            self.invoke(direct_positional_command, ["first", "--unknown", "value"]),
+            ("first", ["--unknown", "value"]),
+        )
+
+    def test_direct_parameters_work_in_subcommand_mappings(self):
+        sys.argv = ["program", "direct_subcommand", "--count", "4", "--name", "selected"]
+        cli({direct_subcommand: "run the direct subcommand"})
+        self.assertEqual(received.pop(), (4, "selected"))
+
+    def test_invalid_direct_handler_signatures_are_rejected_before_parsing(self):
+        def zero_parameter_command():
             pass
 
-        with self.assertRaisesRegex(TypeError, "First argument.*not a dataclass.*int"):
-            cli(invalid_command)
+        def unannotated_command(value):
+            pass
+
+        def positional_only_command(value: int, /):
+            pass
+
+        def variadic_positional_command(*values: int):
+            pass
+
+        def variadic_keyword_command(**values: int):
+            pass
+
+        def structured_positional_only(args: PrimitiveArgs, /):
+            pass
+
+        def structured_variadic(*args: PrimitiveArgs):
+            pass
+
+        cases = [
+            (zero_parameter_command, "parameter"),
+            (unannotated_command, "value.*annotation"),
+            (positional_only_command, "value.*positional"),
+            (variadic_positional_command, "values.*variadic"),
+            (variadic_keyword_command, "values.*variadic"),
+            (structured_positional_only, "args.*positional"),
+            (structured_variadic, "args.*variadic"),
+        ]
+        for command, message in cases:
+            with self.subTest(command=command.__name__):
+                with self.assertRaisesRegex(TypeError, message):
+                    cli(command)
 
     def test_duplicate_subcommand_names_are_rejected(self):
         def duplicate(args: SubcommandArgs):
