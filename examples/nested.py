@@ -1,23 +1,25 @@
-from dataclasses import dataclass
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Annotated, Callable
 
-from msup.cli import cli, cliarg
+from msup.cli import CliArg, cli
+
 
 @dataclass
 class DatasetConfig:
-    target: Callable = cliarg(help="dataset class path", default=None)
-    name: str | None = cliarg(help="name of dataset", default=None)
+    target: Annotated[Callable, CliArg(help="dataset class path")] = None
+    name: Annotated[str | None, CliArg(help="name of dataset")] = None
 
 
 @dataclass
 class DataloaderConfig:
-    dataset: DatasetConfig = cliarg(help="dataset", default_factory=DatasetConfig)
+    dataset: Annotated[DatasetConfig, CliArg(help="dataset")] = field(default_factory=DatasetConfig)
 
 
 @dataclass
 class TrainConfig:
-    train_data: DataloaderConfig = cliarg(help="train dset", default_factory=DataloaderConfig)
-    val_data: DataloaderConfig = cliarg(help="train dset", default_factory=DataloaderConfig)
+    train_data: Annotated[DataloaderConfig, CliArg(help="train dset")] = field(default_factory=DataloaderConfig)
+    val_data: Annotated[DataloaderConfig, CliArg(help="train dset")] = field(default_factory=DataloaderConfig)
+
 
 def train(config: TrainConfig):
     print(config)

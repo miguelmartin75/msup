@@ -1,18 +1,19 @@
 from dataclasses import dataclass
+from typing import Annotated
 
-from msup.cli import cli, cliarg
+from msup.cli import CliArg, cli
 
 
 @dataclass
 class Nested:
     lr: float
-    name: str = cliarg("a name", default="test")
+    name: Annotated[str, CliArg(help="a name")] = "test"
 
 
 @dataclass
 class FooArgs:
-    nest: Nested = cliarg("some additional params", short="-n")
-    x: int = cliarg("assign an x")
+    nest: Annotated[Nested, CliArg(help="some additional params", short="-n")]
+    x: Annotated[int, CliArg(help="assign an x")]
     y: float = 20
 
 
@@ -30,7 +31,9 @@ def bar(args: BarArgs):
 
 
 if __name__ == "__main__":
-    cli({
-        foo: "run foo",
-        bar: "run bar",
-    })
+    cli(
+        {
+            foo: "run foo",
+            bar: "run bar",
+        }
+    )

@@ -3,15 +3,17 @@ import inspect
 import os
 import sys
 from collections.abc import Callable as Callable2
-from dataclasses import MISSING, dataclass, field, fields, is_dataclass
-from typing import Any, Callable, TypeVar, get_args, get_origin, get_type_hints
+from dataclasses import MISSING, dataclass, field, is_dataclass
+from typing import Annotated, Any, Callable, TypeVar, get_args, get_origin, get_type_hints
 
 from msup.base import (
     effective_type,
+    fields_or_init_kwargs,
     from_dict_value,
     get_collection_args,
     has_default_value,
     is_optional,
+    is_structured_model,
     to_json,
 )
 
@@ -19,15 +21,31 @@ T = TypeVar("T")
 
 
 def cli(cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], **argsparse_kwargs): ...
-def cliarg(
-    help: str = "",
-    short: str | list[str] | None = None,
-    env: str | None = None,
-    pos: bool = False,
-    opt: bool = True,
-    secret: bool = False,
-    **kwargs,
-): ...
+
+
+@dataclass(frozen=True)
+class CliArg:
+    """CLI metadata for an ``Annotated`` type hint."""
+
+    help: str = ""
+    short: str | None = None
+    env: str | None = None
+    pos: bool = False
+    opt: bool = True
+    secret: bool = False
+
+
+def unwrap_cliarg(annotation: Any) -> tuple[Any, CliArg | None]:
+    """Return an ``Annotated`` type's base type and its CLI metadata."""
+    cli_arg = None
+    while get_origin(annotation) is Annotated:
+        annotation, *metadata = get_args(annotation)
+        for value in metadata:
+            if isinstance(value, CliArg):
+                if cli_arg is not None:
+                    raise TypeError("an annotation can contain at most one CliArg")
+                cli_arg = value
+    return annotation, cli_arg
 
 
 def strtobool(value: str) -> bool:
@@ -41,49 +59,73 @@ def strtobool(value: str) -> bool:
     return result
 
 
-def cliarg(
-    help: str = "",
-    short: str | list[str] | None = None,
-    env: str | None = None,
-    pos: bool = False,
-    opt: bool = True,
-    secret: bool = False,
-    **kwargs,
-):
-    return field(
-        metadata={
-            "help": help,
-            "short": short if isinstance(short, list) else [short],
-            "env": env,
-            "pos": pos,
-            "opt": opt,
-            "secret": secret,
-        },
-        **kwargs,
-    )
-
-
 def error_exit(msg: str, code: int = 1):
     print(f"[ERROR]: {msg}", file=sys.stderr)
     sys.exit(code)
 
 
 def _get_first_arg(func):
-    hints = get_type_hints(func)
+    hints = get_type_hints(func, include_extras=True)
     result = None
     for name in inspect.signature(func).parameters:
         if name not in ("self", "cls"):
-            result = hints.get(name)
+            result, _ = unwrap_cliarg(hints.get(name))
             break
-    if not is_dataclass(result):
-        raise TypeError(f"First argument for {getattr(func, '__name__', func)} is not a dataclass: {result}")
+    if not is_structured_model(result):
+        raise TypeError(f"First argument for {getattr(func, '__name__', func)} is not a dataclass or Pydantic model: {result}")
     return result
+
+
+@dataclass
+class _FunctionArg:
+    name: str
+    annotation: Any
+    default: Any
+    cli_arg: CliArg | None
+
+
+def _command_args(func) -> tuple[str, type | list[_FunctionArg]]:
+    """Classify a command as a structured argument or named parameters."""
+    signature = inspect.signature(func)
+    hints = get_type_hints(func, include_extras=True)
+    parameters = [parameter for parameter in signature.parameters.values() if parameter.name not in ("self", "cls")]
+
+    if not parameters:
+        raise TypeError(f"Command {getattr(func, '__name__', func)} must have at least one parameter")
+
+    for parameter in parameters:
+        if parameter.kind is parameter.POSITIONAL_ONLY:
+            raise TypeError(f"{parameter.name}: positional-only command parameters are not supported")
+        if parameter.kind is parameter.VAR_POSITIONAL:
+            raise TypeError(f"{parameter.name}: variadic *args command parameters are not supported")
+        if parameter.kind is parameter.VAR_KEYWORD:
+            raise TypeError(f"{parameter.name}: variadic **kwargs command parameters are not supported")
+
+    if len(parameters) == 1:
+        annotation, _ = unwrap_cliarg(hints.get(parameters[0].name, parameters[0].annotation))
+        if is_structured_model(annotation):
+            return "structured", annotation
+
+    result = []
+    for parameter in parameters:
+        if parameter.annotation is inspect.Parameter.empty:
+            raise TypeError(f"{parameter.name}: command parameters must have an annotation")
+        annotation, cli_arg = unwrap_cliarg(hints.get(parameter.name, parameter.annotation))
+        result.append(
+            _FunctionArg(
+                parameter.name,
+                annotation,
+                MISSING if parameter.default is inspect.Parameter.empty else parameter.default,
+                cli_arg,
+            )
+        )
+    return "direct", result
 
 
 def argument_type(annotation: type, field_name: str) -> type:
     annotation = effective_type(annotation, field_name)
     origin = get_origin(annotation) or annotation
-    if annotation is Any or is_dataclass(annotation) or origin in (dict, Callable2):
+    if annotation is Any or is_structured_model(annotation) or origin in (dict, Callable2):
         result = str
     elif origin is list:
         result = argument_type(get_collection_args(annotation)[0], field_name)
@@ -130,7 +172,7 @@ def _add_args(
     pos_arg_config: bool = False,
     force_no_default: bool = False,
 ):
-    assert is_dataclass(cmd_type), f"{cmd_type} is not a dataclass"
+    assert is_structured_model(cmd_type), f"{cmd_type} is not a structured model"
     if not prefix:
         if pos_arg_config:
             parser.add_argument(
@@ -149,27 +191,29 @@ def _add_args(
             help=f"configuration for {cmd_type.__name__}",
         )
 
-    hints = get_type_hints(cmd_type)
-    command_fields = fields(cmd_type)
+    hints = get_type_hints(cmd_type, include_extras=True)
+    command_fields = fields_or_init_kwargs(cmd_type)
     for field_index, f in enumerate(command_fields):
         field_name = f.name
         name = f"{prefix}.{field_name}" if prefix else field_name
-        annotation = hints[field_name]
-        secret = f.metadata.get("secret", False)
+        annotation = f.annotation
+        _, cli_arg = unwrap_cliarg(hints.get(f.name, annotation))
+        cli_arg = cli_arg or CliArg()
+        secret = cli_arg.secret
         default_help = ""
         if not secret and f.default is not MISSING and (not force_no_default or annotation is bool):
             default_help = f"Default: {f.default}"
-        env_name = f.metadata.get("env")
+        env_name = cli_arg.env
         env_value = os.getenv(env_name) if env_name else None
         if env_value is not None and not secret:
             default_value = from_dict_value(env_value, annotation, str, name)
             default_help = f"Default (using env: ${{{env_name}}}): {default_value}"
-        help_text = f.metadata.get("help", "")
+        help_text = cli_arg.help
         if default_help:
             help_text = f"{help_text}. {default_help}" if help_text else default_help
 
-        positional = f.metadata.get("pos", False)
-        optional = f.metadata.get("opt", True)
+        positional = cli_arg.pos
+        optional = cli_arg.opt
         collection_origin = get_origin(effective_type(annotation, name))
         if positional and collection_origin in (list, tuple) and field_index != len(command_fields) - 1:
             raise TypeError(f"{name}: positional collection arguments must be declared last")
@@ -188,20 +232,81 @@ def _add_args(
                 parser.set_defaults(_remainder_dest=f"{name}_pos")
         if optional or not positional:
             option_names = []
-            for short_name in f.metadata.get("short", []):
-                if short_name is not None:
-                    if short_name.startswith("--"):
-                        raise TypeError(f"{name}: short options must not start with --")
-                    short_name = short_name if short_name.startswith("-") else f"-{short_name}"
-                    prefix_to_use = short_prefix if short_prefix is not None else prefix
-                    option_names.append(f"-{prefix_to_use}.{short_name[1:]}" if prefix_to_use else short_name)
+            if cli_arg.short is not None:
+                short_name = cli_arg.short
+                if short_name.startswith("--"):
+                    raise TypeError(f"{name}: short options must not start with --")
+                short_name = short_name if short_name.startswith("-") else f"-{short_name}"
+                prefix_to_use = short_prefix if short_prefix is not None else prefix
+                option_names.append(f"-{prefix_to_use}.{short_name[1:]}" if prefix_to_use else short_name)
             option_names.append(f"--{name}")
             _add_argument(parser, option_names, {"dest": name}, annotation, name, help_text, positional=False)
 
         field_type = effective_type(annotation, name)
-        if is_dataclass(field_type):
-            child_short = f.metadata.get("short", [None])[0]
+        if is_structured_model(field_type):
+            child_short = cli_arg.short
             _add_args(parser, field_type, prefix=name, short_prefix=child_short, force_no_default=True)
+
+
+def _add_direct_args(parser, command_args: list[_FunctionArg], pos_arg_config: bool = False):
+    if pos_arg_config:
+        parser.add_argument(
+            "args",
+            nargs="?",
+            type=argument_type(dict[str, Any], "args"),
+            default=argparse.SUPPRESS,
+            help="configuration for command",
+        )
+    parser.add_argument(
+        "--Args",
+        dest="args",
+        type=argument_type(dict[str, Any], "args"),
+        default=argparse.SUPPRESS,
+        help="configuration for command",
+    )
+
+    for field_index, command_arg in enumerate(command_args):
+        name = command_arg.name
+        annotation = command_arg.annotation
+        cli_arg = command_arg.cli_arg or CliArg()
+        default_help = ""
+        if not cli_arg.secret and command_arg.default is not MISSING:
+            default_help = f"Default: {command_arg.default}"
+        env_value = os.getenv(cli_arg.env) if cli_arg.env else None
+        if env_value is not None and not cli_arg.secret:
+            default_value = from_dict_value(env_value, annotation, str, name)
+            default_help = f"Default (using env: ${{{cli_arg.env}}}): {default_value}"
+        help_text = cli_arg.help
+        if default_help:
+            help_text = f"{help_text}. {default_help}" if help_text else default_help
+
+        positional = cli_arg.pos
+        optional = cli_arg.opt
+        collection_origin = get_origin(effective_type(annotation, name))
+        if positional and collection_origin in (list, tuple) and field_index != len(command_args) - 1:
+            raise TypeError(f"{name}: positional collection arguments must be declared last")
+        if positional:
+            remainder = collection_origin in (list, tuple) and not optional
+            _add_argument(
+                parser,
+                [f"{name}_pos"],
+                {"nargs": argparse.REMAINDER if remainder else "?"},
+                annotation,
+                name,
+                help_text,
+                positional=True,
+            )
+            if remainder:
+                parser.set_defaults(_remainder_dest=f"{name}_pos")
+        if optional or not positional:
+            option_names = []
+            if cli_arg.short is not None:
+                short_name = cli_arg.short
+                if short_name.startswith("--"):
+                    raise TypeError(f"{name}: short options must not start with --")
+                option_names.append(short_name if short_name.startswith("-") else f"-{short_name}")
+            option_names.append(f"--{name}")
+            _add_argument(parser, option_names, {"dest": name}, annotation, name, help_text, positional=False)
 
 
 def _config_values(args) -> dict:
@@ -228,17 +333,36 @@ def _parse_args(parser):
     return args
 
 
-def _from_cli_args(clazz: type, args, config: dict | None = None, prefix: str = ""):
-    assert is_dataclass(clazz), f"{clazz} is not a dataclass"
-    config = {} if config is None else config
-    hints = get_type_hints(clazz)
-    construct_args = {}
-    for f in fields(clazz):
+def _has_nested_source(clazz: type, args, config: dict, prefix: str) -> bool:
+    """Whether config, environment, or CLI supplies a value below ``prefix``."""
+    hints = get_type_hints(clazz, include_extras=True)
+    for f in fields_or_init_kwargs(clazz):
         name = f"{prefix}.{f.name}" if prefix else f.name
-        annotation = hints[f.name]
+        annotation = f.annotation
+        _, cli_arg = unwrap_cliarg(hints.get(f.name, annotation))
+        if f.name in config or (cli_arg and cli_arg.env and os.getenv(cli_arg.env) is not None):
+            return True
+        if hasattr(args, name) or hasattr(args, f"{name}_pos"):
+            return True
+        if is_structured_model(effective_type(annotation, name)) and _has_nested_source(
+            effective_type(annotation, name), args, config.get(f.name, {}), name
+        ):
+            return True
+    return False
+
+
+def _from_cli_args(clazz: type, args, config: dict | None = None, prefix: str = ""):
+    assert is_structured_model(clazz), f"{clazz} is not a structured model"
+    config = {} if config is None else config
+    hints = get_type_hints(clazz, include_extras=True)
+    construct_args = {}
+    for f in fields_or_init_kwargs(clazz):
+        name = f"{prefix}.{f.name}" if prefix else f.name
+        annotation = f.annotation
+        _, cli_arg = unwrap_cliarg(hints.get(f.name, annotation))
         field_type = effective_type(annotation, name)
         config_value = config.get(f.name, MISSING)
-        env_value = os.getenv(f.metadata.get("env")) if f.metadata.get("env") else None
+        env_value = os.getenv(cli_arg.env) if cli_arg and cli_arg.env else None
         if hasattr(args, name):
             cli_value = getattr(args, name)
         elif hasattr(args, f"{name}_pos"):
@@ -246,7 +370,7 @@ def _from_cli_args(clazz: type, args, config: dict | None = None, prefix: str = 
         else:
             cli_value = MISSING
 
-        if is_dataclass(field_type):
+        if is_structured_model(field_type):
             value = config_value
             if env_value is not None:
                 value = env_value
@@ -256,11 +380,13 @@ def _from_cli_args(clazz: type, args, config: dict | None = None, prefix: str = 
                 nested_config = {}
             elif isinstance(value, dict):
                 nested_config = value
-            elif is_dataclass(value):
-                nested_config = {child.name: getattr(value, child.name) for child in fields(value)}
+            elif is_structured_model(value):
+                nested_config = {child.name: getattr(value, child.name) for child in fields_or_init_kwargs(type(value))}
             else:
                 converted = from_dict_value(value, field_type, type(value), name)
-                nested_config = {child.name: getattr(converted, child.name) for child in fields(converted)}
+                nested_config = {child.name: getattr(converted, child.name) for child in fields_or_init_kwargs(type(converted))}
+            if is_structured_model(clazz) and not is_dataclass(clazz) and value is MISSING and not _has_nested_source(field_type, args, nested_config, name):
+                continue
             construct_args[f.name] = _from_cli_args(field_type, args, nested_config, name)
         else:
             value = config_value
@@ -273,9 +399,36 @@ def _from_cli_args(clazz: type, args, config: dict | None = None, prefix: str = 
                 concrete_type = type(value)
             if value is not MISSING:
                 construct_args[f.name] = from_dict_value(value, annotation, concrete_type, name)
-            elif not has_default_value(f) and not is_optional(annotation):
+            elif is_dataclass(clazz) and not has_default_value(f) and not is_optional(annotation):
                 error_exit(f"--{name} not provided (default value DNE)", 3)
     return clazz(**construct_args)
+
+
+def _from_direct_cli_args(command_args: list[_FunctionArg], args, config: dict | None = None) -> dict:
+    config = {} if config is None else config
+    result = {}
+    for command_arg in command_args:
+        name = command_arg.name
+        annotation = command_arg.annotation
+        cli_arg = command_arg.cli_arg
+        value = config.get(name, MISSING)
+        concrete_type = type(value) if value is not MISSING else None
+        env_value = os.getenv(cli_arg.env) if cli_arg and cli_arg.env else None
+        if env_value is not None:
+            value = env_value
+            concrete_type = str
+        if hasattr(args, name):
+            value = getattr(args, name)
+            concrete_type = type(value)
+        elif hasattr(args, f"{name}_pos"):
+            value = getattr(args, f"{name}_pos")
+            concrete_type = type(value)
+
+        if value is not MISSING:
+            result[name] = from_dict_value(value, annotation, concrete_type, name)
+        elif command_arg.default is MISSING:
+            error_exit(f"--{name} not provided (default value DNE)", 3)
+    return result
 
 
 def cli(cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], pos_arg_config: bool = False, **argsparse_kwargs):
@@ -289,19 +442,32 @@ def cli(cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], pos_arg
             if cmd_name in seen:
                 raise TypeError(f"{cmd_name} command occurs more than once")
             seen.add(cmd_name)
-            cmd_type = _get_first_arg(cmd_fn)
+            cmd_mode, command_args = _command_args(cmd_fn)
             p = subparsers.add_parser(cmd_name, help=desc, argument_default=argparse.SUPPRESS)
-            p.set_defaults(func=cmd_fn, cmd_type=cmd_type)
-            _add_args(p, cmd_type, pos_arg_config=pos_arg_config)
+            p.set_defaults(func=cmd_fn, cmd_mode=cmd_mode, command_args=command_args)
+            if cmd_mode == "structured":
+                _add_args(p, command_args, pos_arg_config=pos_arg_config)
+            else:
+                _add_direct_args(p, command_args, pos_arg_config=pos_arg_config)
         args = _parse_args(parser)
         if hasattr(args, "func"):
-            args.func(_from_cli_args(args.cmd_type, args, _config_values(args)))
+            if args.cmd_mode == "structured":
+                args.func(_from_cli_args(args.command_args, args, _config_values(args)))
+            else:
+                args.func(**_from_direct_cli_args(args.command_args, args, _config_values(args)))
         else:
             parser.print_help()
     else:
-        _add_args(parser, _get_first_arg(cmd_or_cmds), pos_arg_config=pos_arg_config)
+        cmd_mode, command_args = _command_args(cmd_or_cmds)
+        if cmd_mode == "structured":
+            _add_args(parser, command_args, pos_arg_config=pos_arg_config)
+        else:
+            _add_direct_args(parser, command_args, pos_arg_config=pos_arg_config)
         args = _parse_args(parser)
-        cmd_or_cmds(_from_cli_args(_get_first_arg(cmd_or_cmds), args, _config_values(args)))
+        if cmd_mode == "structured":
+            cmd_or_cmds(_from_cli_args(command_args, args, _config_values(args)))
+        else:
+            cmd_or_cmds(**_from_direct_cli_args(command_args, args, _config_values(args)))
 
 
 def ex_default_callable(x: int):
@@ -317,7 +483,7 @@ class ExampleArgs:
     name: str
     x: int = 3
     y: float = 10
-    zs: list[float] = cliarg(help="a list of zs", default_factory=lambda: [])
+    zs: Annotated[list[float], CliArg(help="a list of zs")] = field(default_factory=list)
     some_callable: Callable[[int], None] = ex_default_callable
     debug: bool = False
 
