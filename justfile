@@ -7,10 +7,13 @@ setup-dev:
     uv sync --group dev
 
 test:
-    uv run --group dev pytest
+    uv run --group dev --extra pydantic pytest
 
 coverage:
-    uv run --group dev pytest --cov=msup --cov-report=term-missing
+    uv run --group dev --extra pydantic pytest --cov=msup --cov-report=term-missing
+
+no-extra-import:
+    uv run --no-default-groups --no-extra pydantic -- python -c 'import msup.base; import msup.cli'
 
 lint:
     uv run --group dev ruff check .
