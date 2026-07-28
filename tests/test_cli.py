@@ -1,3 +1,4 @@
+from argparse import Namespace
 import os
 import sys
 import unittest
@@ -7,7 +8,7 @@ from enum import Enum
 from io import StringIO
 from typing import Any, Callable, Optional
 
-from msup.cli import argument_type, cli, cliarg, strtobool
+from msup.cli import _from_cli_args, argument_type, cli, cliarg, strtobool
 
 
 received = []
@@ -114,6 +115,22 @@ class NestedArgs:
 
 
 @dataclass
+class EnvironmentNestedArgs:
+    child: ChildArgs = cliarg(env="MSUP_TEST_CHILD", default_factory=ChildArgs)
+
+
+@dataclass
+class NonfinalPositionalCollectionArgs:
+    values: list[str] = cliarg(pos=True, default_factory=list)
+    name: str = "default"
+
+
+@dataclass
+class InvalidShortOptionArgs:
+    name: str = cliarg(short="--name", default="default")
+
+
+@dataclass
 class UnsupportedUnionArgs:
     value: int | str = 1
 
@@ -197,6 +214,18 @@ def nested_command(args: NestedArgs):
     received.append(args)
 
 
+def environment_nested_command(args: EnvironmentNestedArgs):
+    received.append(args)
+
+
+def nonfinal_positional_collection_command(args: NonfinalPositionalCollectionArgs):
+    received.append(args)
+
+
+def invalid_short_option_command(args: InvalidShortOptionArgs):
+    received.append(args)
+
+
 def unsupported_union_command(args: UnsupportedUnionArgs):
     received.append(args)
 
@@ -220,6 +249,7 @@ class CliContractTests(unittest.TestCase):
         self.old_enabled = os.environ.pop("MSUP_TEST_ENABLED", None)
         self.old_help_visible = os.environ.pop("MSUP_TEST_HELP_VISIBLE", None)
         self.old_help_secret = os.environ.pop("MSUP_TEST_HELP_SECRET", None)
+        self.old_child = os.environ.pop("MSUP_TEST_CHILD", None)
         received.clear()
 
     def tearDown(self):
@@ -240,6 +270,10 @@ class CliContractTests(unittest.TestCase):
             os.environ.pop("MSUP_TEST_HELP_SECRET", None)
         else:
             os.environ["MSUP_TEST_HELP_SECRET"] = self.old_help_secret
+        if self.old_child is None:
+            os.environ.pop("MSUP_TEST_CHILD", None)
+        else:
+            os.environ["MSUP_TEST_CHILD"] = self.old_child
         received.clear()
 
     def invoke(self, command, argv, **kwargs):
@@ -365,6 +399,42 @@ class CliContractTests(unittest.TestCase):
     def test_dotted_nested_option_overrides_nested_configuration(self):
         result = self.invoke(nested_command, ["--Args", '{"child": {"count": 2}}', "--child.count", "4"])
         self.assertEqual(result, NestedArgs(child=ChildArgs(count=4)))
+
+    def test_nested_dataclass_accepts_json_string_options_and_environment_values(self):
+        self.assertEqual(self.invoke(nested_command, ["--child", '{"count": 4}']), NestedArgs(child=ChildArgs(count=4)))
+        os.environ["MSUP_TEST_CHILD"] = '{"count": 7}'
+        self.assertEqual(self.invoke(environment_nested_command, []), EnvironmentNestedArgs(child=ChildArgs(count=7)))
+
+    def test_nested_dataclass_accepts_dataclass_configuration_values(self):
+        result = _from_cli_args(NestedArgs, Namespace(), {"child": ChildArgs(count=6)})
+        self.assertEqual(result, NestedArgs(child=ChildArgs(count=6)))
+
+    def test_nonfinal_positional_collections_are_rejected(self):
+        with self.assertRaisesRegex(TypeError, "values: positional collection arguments must be declared last"):
+            cli(nonfinal_positional_collection_command)
+
+    def test_short_options_must_not_use_long_option_syntax(self):
+        with self.assertRaisesRegex(TypeError, "name: short options must not start with --"):
+            cli(invalid_short_option_command)
+
+    def test_command_handlers_require_a_dataclass_first_argument(self):
+        def invalid_command(value: int):
+            pass
+
+        with self.assertRaisesRegex(TypeError, "First argument.*not a dataclass.*int"):
+            cli(invalid_command)
+
+    def test_duplicate_subcommand_names_are_rejected(self):
+        def duplicate(args: SubcommandArgs):
+            received.append(args)
+
+        first_duplicate = duplicate
+
+        def duplicate(args: SubcommandArgs):
+            received.append(args)
+
+        with self.assertRaisesRegex(TypeError, "duplicate command occurs more than once"):
+            cli({first_duplicate: "first", duplicate: "second"})
 
     def test_unsupported_annotations_report_the_field_and_annotation(self):
         cases = [

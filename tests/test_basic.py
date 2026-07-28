@@ -48,6 +48,13 @@ class BasicClass:
         self.count = count
 
 
+class VarArgsClass:
+    def __init__(self, name: str, *values: int, **options: str):
+        self.name = name
+        self.values = values
+        self.options = options
+
+
 def increment(value: int) -> int:
     return value + 1
 
@@ -93,6 +100,11 @@ class BasicTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "does not resolve to a callable"):
             from_dict(CallableValue, {"callback": "msup.base.__name__"})
 
+    def test_callable_annotation_accepts_direct_callables_and_rejects_invalid_serialization(self):
+        self.assertIs(from_dict(CallableValue, {"callback": increment}).callback, increment)
+        with self.assertRaisesRegex(TypeError, "expected callable value"):
+            to_dict(CallableValue(3))
+
     def test_ambiguous_unions_and_invalid_dict_strings_are_rejected(self):
         @dataclass
         class Ambiguous:
@@ -132,6 +144,39 @@ class BasicTests(unittest.TestCase):
         self.assertIsNone(value.count)
         self.assertEqual(to_dict(BasicClass("ok", 3)), {"name": "ok", "count": 3})
         self.assertEqual(to_kwargs(BasicClass, {"name": "ok", "count": 3, "ignored": 1}), {"name": "ok", "count": 3})
+
+    def test_regular_classes_ignore_variadic_constructor_parameters(self):
+        value = from_dict(VarArgsClass, {"name": "ok", "values": [1], "options": {"color": "blue"}})
+        self.assertEqual(value.name, "ok")
+        self.assertEqual(value.values, ())
+        self.assertEqual(value.options, {})
+        self.assertEqual(to_dict(value), {"name": "ok"})
+
+    def test_to_kwargs_accepts_regular_class_instances(self):
+        self.assertEqual(to_kwargs(BasicClass, BasicClass("ok", 3)), {"name": "ok", "count": 3})
+
+    def test_conversion_rejects_incompatible_values_and_fixed_tuple_lengths(self):
+        @dataclass
+        class NestedOrValues:
+            value: Nested | list[int]
+
+        with self.assertRaisesRegex(TypeError, "cannot be converted from <class 'int'>"):
+            from_dict(NestedOrValues, {"value": 3})
+        with self.assertRaisesRegex(TypeError, r"list\[int\].*cannot be converted from <class 'int'>"):
+            from_dict(ConversionValues, {"values": 3})
+        with self.assertRaisesRegex(TypeError, r"tuple\[int, str\].*cannot be converted from None"):
+            from_dict(ConversionValues, {"pair": None})
+        with self.assertRaisesRegex(TypeError, "expected 2 tuple values, got 1"):
+            from_dict(ConversionValues, {"pair": [3]})
+
+    def test_unparameterized_tuples_preserve_values(self):
+        @dataclass
+        class TupleValues:
+            values: tuple
+
+        value = from_dict(TupleValues, {"values": [1, "two"]})
+        self.assertEqual(value, TupleValues((1, "two")))
+        self.assertEqual(to_dict(value), {"values": (1, "two")})
 
     def test_json_helpers_accept_strings_file_objects_and_paths(self):
         value = ConversionValues(nested=Nested(a=2, b=4), mapping={1: [1.5, 2.5]})
