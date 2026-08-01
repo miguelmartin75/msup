@@ -1,131 +1,111 @@
 # **M**icro **S**erialization **U**tilities for **P**ython
 
-```
-uv pip install msup
+```python
+from msup.base import to_json
+from msup.cli import cli
+
+def greet(name: str, count: int = 1):
+    print(to_json(locals(), type_class=greet))
+
+cli(greet)
 ```
 
-With no required dependencies and only 914 LOC (`wc -l msup/*.py`), this library enables you to:
+With no required dependencies and only 924 LOC (`wc -l msup/*.py`), this library lets you:
 
-- create a CLI application from nested dataclass definitions (see [example](#example) below)
-- serialize/deserialize dataclasses or regular Python classes to/from JSON and Python dictionaries without dependencies
+- create CLIs from typed functions and nested dataclass or Pydantic v2 definitions
+- construct regular Python classes from their `__init__` parameters and serialize or deserialize regular classes, dataclasses, and Pydantic v2 models as JSON and Python dictionaries
 
 Yes, the small LOC is an intentional feature.
 
-# design philosophy
+# Install
 
-This library is designed with the following design philosophies:
+```bash
+uv pip install msup
+```
+
+# Features
+
+- Typed conversion and serialization
+    - Primitives: `str`, `int`, `float`, and `bool`.
+    - Other types: `Any`, optionals, and unambiguous unions. Non-optional unions are conversion-only, not CLI annotations.
+    - Collections: lists, dictionaries, and tuples convert recursively. The CLI supports lists and variable-length tuples; fixed-length tuples are conversion-only.
+    - Importable callables use `module.name` strings for loading and serialization.
+    - `from_dict`, `to_dict`, `from_json`, and `to_json` convert typed values. `to_kwargs` prepares matching constructor settings, for example for `torch.optim.Adam`.
+    - `to_json(locals(), type_class=handler)` serializes only the handler's declared arguments, using its annotations.
+- CLI commands
+    - Use direct typed functions or one dataclass or Pydantic v2 model parameter. A mapping of functions creates named subcommands.
+    - `CliArg(pos=True)` makes a value positional. A final positional list or variable-length tuple with `opt=False` receives all remaining arguments.
+- CLI configuration and metadata
+    - `Annotated[T, CliArg(...)]` sets help text, short options, environment variables, positional and optional behavior, and hides secret defaults from help.
+    - Nested dataclass and Pydantic v2 values accept dotted options such as `optimizer.lr`, inline JSON objects, and JSON file paths.
+    - Missing values use defaults and default factories. Precedence is: explicit option, `CliArg(env=...)`, `--Args` JSON (inline or from a `.json` file), then the default.
+- JSON I/O
+    - `from_json` reads strings, `StringIO`, other file-like streams, and paths. `to_json` returns JSON or writes to file-like streams and `.json` paths.
+
+# Design Philosophy
 
 - simplicity
 - minimal LOC
-- no dependencies by default, i.e. dependencies are opt-in
+- no dependencies by default, so dependencies are opt-in
 - opinionated to reduce boilerplate
 
-# feature list
+# More Examples
 
-Serialization and de-serialization of:
-
-- dataclasses
-    - validating types
-    - basic primitives: float, str, int
-    - optionals, including `list[T] | None`
-    - unions if there is no ambiguity
-    - nested dataclasses
-    - callables defined as importable strings
-    - sub-objects loaded from a string representing a:
-      - JSON object, e.g. `'{"x": 3, "name": "abc"}'`
-      - JSON file, e.g. `myfile.json`
-    - CLI collection fields and final positional argument capture
-- other Python classes with `__init__`, e.g. `torch.optim.Adam` (see [examples/pt_basic.py](./examples/pt_basic.py))
-
-# TODOs
-
-- [ ] parameter sweep example
-- [ ] hooks to support other serialization formats, e.g. YAML
-- [ ] basic SQLite ORM, supporting:
-    - schema generation with support to mark fields as a PK, FK and an index
-    - encode/decode from SQLite
-- [ ] dataclass serialization
-    - [ ] renaming fields
-    - [ ] enum
-
-## examples
-
-- simple CLI: [examples/simple.py](./examples/simple.py)
-- multiple CLI commands with nested config (see below): [examples/multicli.py](./examples/multicli.py)
-- create a PyTorch model and optimizer from config: [examples/pt_basic.py](./examples/pt_basic.py)
-    - This example constructs Python classes, such as a `torch.optim.Adam`, or a user-provided optimizer class, e.g.
-        ```bash
-        ./examples/pt_basic.py test_optim_advanced --lr 0.42 --optim torch.optim.SGD
-        ```
-
-All examples are executable from the repository root. Run the full example integration suite with `just examples`.
-
-The following demonstrates automatically creating a multi-command CLI serializing a dataclass to JSON. You can find this example in [examples/multicli.py](./examples/multicli.py).
+Nested dataclasses produce nested options:
 
 ```python
-import os
 from dataclasses import dataclass, field
-from typing import Annotated, Callable
-
-from examples.cli.callbacks import cosine_warmup_lr_step
-from msup.cli import CliArg, cli, to_json
+from msup.cli import cli
 
 @dataclass
-class ModelConfig:
-    n_layers: Annotated[int, CliArg(help="number of layers for the model")] = 10
-    checkpoint_path: Annotated[str | None, CliArg(short="chkpt", help="path of the checkpoint")] = None
+class Optimizer:
+    lr: float = 0.1
 
 @dataclass
-class TrainArgs:
-    model_config: Annotated[ModelConfig, CliArg()] = field(default_factory=ModelConfig)
-    lr: float = 0.01
-    name: Annotated[str, CliArg(help="name of experiment")] = "example"
-    lr_step_fn: Annotated[Callable[[int, float], float], CliArg(help="learning-rate step function")] = cosine_warmup_lr_step
-    num_workers: int = -1
-    cont: Annotated[bool, CliArg(help="continue training from last known iter?")] = False
-    config_root_dir: Annotated[str, CliArg(help="root directory where configuration is serialized to")] = "./configs"
+class Train:
+    optimizer: Optimizer = field(default_factory=Optimizer)
 
-@dataclass
-class EvalArgs:
-    model_config: Annotated[ModelConfig, CliArg()] = field(default_factory=ModelConfig)
-    num_workers: int = -1
+def train(args: Train):
+    print(args)
 
-def train(args: TrainArgs):
-    print("train args:")
-    print(to_json(args))
-    os.makedirs(args.config_root_dir, exist_ok=True)
-    config_out_path = os.path.join(args.config_root_dir, args.name + ".json")
-
-    print(f"\nwriting config to: {config_out_path}")
-    to_json(args, config_out_path)
-
-def eval(args: EvalArgs):
-    print("eval args:")
-    print(to_json(args))
-
-if __name__ == "__main__":
-    cli({
-        train: "train a model",
-        eval: "evaluate a trained model",
-    })
+cli(train)
 ```
 
-With this example, you can run the train or eval function via `./examples/multicli.py {train,eval} [optional-args...]`, e.g.:
+A mapping of functions creates subcommands:
 
-```bash
-./examples/multicli.py train
+```python
+from msup.cli import cli
+
+def train(name: str):
+    print(name)
+
+def evaluate(name: str):
+    print(name)
+
+cli({train: "train a model", evaluate: "evaluate a model"})
 ```
 
-Use an importable Python callable and reproduce a JSON configuration:
+`Optimizer` is a regular class that can be built from a dictionary and serialized to a dictionary or JSON. CLI commands require typed functions, dataclasses, or Pydantic v2 models. `to_kwargs` prepares matching settings for `torch.optim.Adam`:
 
-```bash
-./examples/multicli.py train --lr_step_fn examples.cli.callbacks.identity_step_fn --lr 0.1 --name identity
-./examples/multicli.py train --Args configs/identity.json --lr 0.2
+```python
+from msup.base import from_dict, to_dict, to_json, to_kwargs
+
+class Optimizer:
+    def __init__(self, lr: float, steps: int = 1):
+        self.lr = lr
+        self.steps = steps
+
+optimizer = from_dict(Optimizer, {"lr": 0.1})
+payload = to_dict(optimizer)
+json_text = to_json(optimizer)
+kwargs = to_kwargs(Optimizer, optimizer)  # to construct a copy via `Optimizer(**kwargs)`
 ```
 
-Nested dataclasses can be read from a JSON file or JSON object from the CLI:
-
-```bash
-./examples/multicli.py train --model_config configs/models/small.json
-./examples/multicli.py train --model_config '{"n_layers": 1}'
-```
+See:
+- Direct function arguments: [examples/function_args.py](./examples/function_args.py)
+- Nested dataclass command: [examples/nested.py](./examples/nested.py)
+- Multiple CLI commands: [examples/multicli.py](./examples/multicli.py)
+- Simple CLI: [examples/simple.py](./examples/simple.py)
+- Pydantic v2 CLI: [examples/pydantic_basic.py](./examples/pydantic_basic.py)
+- Regular-class and PyTorch construction: [examples/pt_basic.py](./examples/pt_basic.py)
+- Contributor backlog: [dev/TODO.md](./dev/TODO.md)

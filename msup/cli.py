@@ -4,10 +4,10 @@ import os
 import sys
 from collections.abc import Callable as Callable2
 from dataclasses import MISSING, dataclass, field, is_dataclass
-from typing import Annotated, Any, Callable, TypeVar, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Callable, TypeVar, get_args, get_origin
 
 from msup.base import (
-    InitArg,
+    FieldSpec,
     effective_type,
     fields_or_init_kwargs,
     from_dict_value,
@@ -63,9 +63,8 @@ def error_exit(msg: str, code: int = 1):
     sys.exit(code)
 
 
-def command_args(func) -> tuple[str, type | list[InitArg]]:
+def command_args(func) -> tuple[str, type | list[FieldSpec]]:
     signature = inspect.signature(func)
-    hints = get_type_hints(func, include_extras=True)
     parameters = [parameter for parameter in signature.parameters.values() if parameter.name not in ("self", "cls")]
 
     if not parameters:
@@ -78,27 +77,18 @@ def command_args(func) -> tuple[str, type | list[InitArg]]:
             raise TypeError(f"{parameter.name}: variadic *args command parameters are not supported")
         if parameter.kind is parameter.VAR_KEYWORD:
             raise TypeError(f"{parameter.name}: variadic **kwargs command parameters are not supported")
+        if parameter.annotation is inspect.Parameter.empty:
+            raise TypeError(f"{parameter.name}: command parameters must have an annotation")
+
+    parameter_names = {parameter.name for parameter in parameters}
+    command_fields = [field for field in fields_or_init_kwargs(func) if field.name in parameter_names]
 
     if len(parameters) == 1:
-        annotation, _ = unwrap_cliarg(hints.get(parameters[0].name, parameters[0].annotation))
+        annotation = command_fields[0].annotation
         if is_structured_model(annotation):
             return "structured", annotation
 
-    result = []
-    for parameter in parameters:
-        if parameter.annotation is inspect.Parameter.empty:
-            raise TypeError(f"{parameter.name}: command parameters must have an annotation")
-        annotation, annotations = unwrap_annotated(hints.get(parameter.name, parameter.annotation))
-        result.append(
-            InitArg(
-                parameter.name,
-                annotation,
-                annotations,
-                MISSING if parameter.default is inspect.Parameter.empty else parameter.default,
-                MISSING,
-            )
-        )
-    return "direct", result
+    return "direct", command_fields
 
 
 def argument_type(annotation: type, field_name: str) -> type:
@@ -228,7 +218,7 @@ def _add_args(
             _add_args(parser, field_type, prefix=name, short_prefix=cli_arg.short, force_no_default=True)
 
 
-def add_direct_args(parser, command_args: list[InitArg], pos_arg_config: bool = False):
+def add_direct_args(parser, command_args: list[FieldSpec], pos_arg_config: bool = False):
     if pos_arg_config:
         parser.add_argument(
             "args",
@@ -386,7 +376,7 @@ def _from_cli_args(clazz: type, args, config: dict | None = None, prefix: str = 
     return clazz(**construct_args)
 
 
-def from_direct_cli_args(command_args: list[InitArg], args, config: dict | None = None) -> dict:
+def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | None = None) -> dict:
     config = {} if config is None else config
     result = {}
     for command_arg in command_args:

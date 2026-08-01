@@ -2,17 +2,24 @@ import importlib
 import inspect
 import json
 import os
-from collections.abc import Callable as Callable2
+from collections.abc import Callable as Callable2, Mapping
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from types import UnionType
-from typing import Annotated, Any, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Callable, TypeVar, Union, get_args, get_origin, get_type_hints
 
 T = TypeVar("T")
 
 
 def to_kwargs(clazz: type, x: T) -> dict: ...
 def from_dict(clazz: type, x: dict) -> T: ...
-def to_dict(x: T) -> dict: ...
+def to_dict(x: T, type_class: type | Callable[..., Any] | None = None) -> dict: ...
+def to_json(
+    x: T,
+    file_like=None,
+    indent: int | None = 2,
+    *,
+    type_class: type | Callable[..., Any] | None = None,
+) -> str | None: ...
 def is_pydantic_model(candidate: type | object) -> bool: ...
 def is_structured_model(candidate: type | object) -> bool: ...
 
@@ -35,7 +42,7 @@ else:
 
 
 @dataclass
-class InitArg:
+class FieldSpec:
     name: str
     annotation: Any
     annotations: list[Any]
@@ -83,7 +90,13 @@ def from_json(clazz: type, s: str | None = None, file_like=None, path: str | Non
     return result
 
 
-def to_json(x: T, file_like=None, indent: int | None = 2) -> str | None:
+def to_json(
+    x: T,
+    file_like=None,
+    indent: int | None = 2,
+    *,
+    type_class: type | Callable[..., Any] | None = None,
+) -> str | None:
     if file_like:
         if isinstance(file_like, str):
             assert file_like.endswith(".json"), f"file should end with json, got: {file_like}"
@@ -91,12 +104,12 @@ def to_json(x: T, file_like=None, indent: int | None = 2) -> str | None:
             if parent:
                 os.makedirs(parent, exist_ok=True)
             with open(file_like, "w") as out_f:
-                json.dump(to_dict(x), out_f, indent=indent)
+                json.dump(to_dict(x, type_class), out_f, indent=indent)
         else:
-            json.dump(to_dict(x), file_like, indent=indent)
+            json.dump(to_dict(x, type_class), file_like, indent=indent)
         result = None
     else:
-        result = json.dumps(to_dict(x), indent=indent)
+        result = json.dumps(to_dict(x, type_class), indent=indent)
     return result
 
 
@@ -104,15 +117,17 @@ def has_default_value(f):
     return f.default is not MISSING or f.default_factory is not MISSING
 
 
-def fields_or_init_kwargs(clazz: type):
-    assert inspect.isclass(clazz), f"{clazz} is not a class"
-    if is_dataclass(clazz):
-        hints = get_type_hints(clazz, include_extras=True)
+def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
+    is_function_or_method = inspect.isfunction(target) or inspect.ismethod(target)
+    assert inspect.isclass(target) or is_function_or_method, f"{target} is not a class, function, or method"
+
+    if is_dataclass(target):
+        hints = get_type_hints(target, include_extras=True)
         result = []
-        for field in fields(clazz):
+        for field in fields(target):
             annotation, annotations = unwrap_annotated(hints.get(field.name, field.type))
             result.append(
-                InitArg(
+                FieldSpec(
                     field.name,
                     annotation,
                     annotations,
@@ -120,17 +135,18 @@ def fields_or_init_kwargs(clazz: type):
                     field.default_factory,
                 )
             )
-    elif is_pydantic_model(clazz):
-        hints = get_type_hints(clazz, include_extras=True)
+    elif is_pydantic_model(target):
+        hints = get_type_hints(target, include_extras=True)
         result = []
-        for name, model_field in clazz.model_fields.items():
+        for name, model_field in target.model_fields.items():
             default = MISSING if model_field.is_required() else model_field.default
             default_factory = model_field.default_factory if model_field.default_factory is not None else MISSING
             annotation, annotations = unwrap_annotated(hints.get(name, model_field.annotation))
-            result.append(InitArg(name, annotation, annotations, default, default_factory))
+            result.append(FieldSpec(name, annotation, annotations, default, default_factory))
     else:
-        signature = inspect.signature(clazz.__init__)
-        hints = get_type_hints(clazz.__init__, include_extras=True)
+        inspected_target = target.__init__ if inspect.isclass(target) else target
+        signature = inspect.signature(inspected_target)
+        hints = get_type_hints(inspected_target, include_extras=True)
         result = []
         for name, parameter in signature.parameters.items():
             if name in ("self", "cls"):
@@ -141,7 +157,7 @@ def fields_or_init_kwargs(clazz: type):
             annotation, annotations = unwrap_annotated(hints.get(name, parameter.annotation))
             if annotation is inspect._empty:
                 annotation = None
-            result.append(InitArg(name, annotation, annotations, default, MISSING))
+            result.append(FieldSpec(name, annotation, annotations, default, MISSING))
     return result
 
 
@@ -397,13 +413,17 @@ def to_dict_value(x: T, field_type: type):
         return x
 
 
-def to_dict(x: T) -> dict:
-    if is_pydantic_model(x):
+def to_dict(x: T, type_class: type | Callable[..., Any] | None = None) -> dict:
+    if type_class is None and is_pydantic_model(x):
         result = x.model_dump()
     else:
         result = {}
-        for f in fields_or_init_kwargs(type(x)):
-            if hasattr(x, f.name):
+        field_source = type(x) if type_class is None else type_class
+        for f in fields_or_init_kwargs(field_source):
+            if isinstance(x, Mapping) and f.name in x:
+                value = x[f.name]
+                result[f.name] = to_dict_value(value, f.annotation or type(value))
+            elif not isinstance(x, Mapping) and hasattr(x, f.name):
                 value = getattr(x, f.name)
                 result[f.name] = to_dict_value(value, f.annotation or type(value))
     return result

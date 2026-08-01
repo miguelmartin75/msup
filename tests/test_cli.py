@@ -8,8 +8,10 @@ from dataclasses import FrozenInstanceError, dataclass, field
 from enum import Enum
 from io import StringIO
 from typing import Annotated, Any, Callable, Optional
+from unittest.mock import patch
 
-from msup.cli import CliArg, _from_cli_args, argument_type, cli, strtobool
+from msup.base import fields_or_init_kwargs
+from msup.cli import CliArg, _from_cli_args, argument_type, cli, command_args, strtobool
 
 
 received = []
@@ -307,6 +309,10 @@ def direct_subcommand(count: int, name: str = "default"):
     received.append((count, name))
 
 
+def direct_command_with_reserved_names(self: int, cls: str, count: int):
+    received.append((self, cls, count))
+
+
 class CliContractTests(unittest.TestCase):
     def setUp(self):
         self.old_argv = sys.argv
@@ -573,6 +579,22 @@ class CliContractTests(unittest.TestCase):
             "mapping": None,
             "child": None,
         })
+
+    def test_direct_parameters_reuse_shared_field_specs(self):
+        shared_fields = fields_or_init_kwargs(direct_command)
+        with patch("msup.cli.fields_or_init_kwargs", return_value=shared_fields) as discovery:
+            mode, command_fields = command_args(direct_command)
+
+        self.assertEqual(mode, "direct")
+        self.assertEqual(command_fields, shared_fields)
+        self.assertTrue(all(field is shared_field for field, shared_field in zip(command_fields, shared_fields)))
+        discovery.assert_called_once_with(direct_command)
+
+    def test_direct_parameters_exclude_reserved_self_and_cls_names(self):
+        mode, command_fields = command_args(direct_command_with_reserved_names)
+
+        self.assertEqual(mode, "direct")
+        self.assertEqual([field.name for field in command_fields], ["count"])
 
     def test_direct_parameters_support_help_args_environment_and_cli_precedence(self):
         sys.argv = ["program", "--help"]
