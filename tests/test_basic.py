@@ -1,5 +1,6 @@
+import json
 import unittest
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import MISSING, dataclass, field as dataclass_field
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -74,7 +75,55 @@ def increment(value: int) -> int:
     return value + 1
 
 
+def function_field_values(
+    required: Annotated[int, "required value", CliArg(help="required")],
+    callback: Callable[[int], int] = increment,
+    defaulted: str = "default value",
+    unannotated=None,
+    *values: int,
+    **options: str,
+):
+    return required, callback, defaulted, unannotated, values, options
+
+
+def function_serialization_values(
+    message: Annotated[str, "message metadata"],
+    count: int,
+    nested: Nested,
+    values: list[int],
+    callback: Callable[[int], int],
+    omitted: str = "default value",
+):
+    return message, count, nested, values, callback, omitted
+
+
+class MethodFieldValues:
+    def method(self, required: int, defaulted: str = "default value"):
+        return required, defaulted
+
+
 class BasicTests(unittest.TestCase):
+    def test_function_field_discovery_preserves_annotations_and_defaults(self):
+        field_info = fields_or_init_kwargs(function_field_values)
+        self.assertEqual([field.name for field in field_info], ["required", "callback", "defaulted", "unannotated"])
+        self.assertEqual(field_info[0].annotation, int)
+        self.assertEqual(field_info[0].annotations, ["required value", CliArg(help="required")])
+        self.assertIs(field_info[0].default, MISSING)
+        self.assertEqual(field_info[1].annotation, Callable[[int], int])
+        self.assertIs(field_info[1].default, increment)
+        self.assertEqual(field_info[2].default, "default value")
+        self.assertIsNone(field_info[3].annotation)
+        self.assertIsNone(field_info[3].default)
+
+    def test_method_field_discovery_supports_bound_and_unbound_methods(self):
+        expected = [("required", MISSING), ("defaulted", "default value")]
+        for method in (MethodFieldValues.method, MethodFieldValues().method):
+            with self.subTest(method=method):
+                self.assertEqual(
+                    [(field.name, field.default) for field in fields_or_init_kwargs(method)],
+                    expected,
+                )
+
     def test_shared_field_discovery_preserves_all_annotated_metadata(self):
         field_info = fields_or_init_kwargs(AnnotatedMetadataValues)[0]
         self.assertEqual(field_info.annotation, int)
@@ -197,6 +246,37 @@ class BasicTests(unittest.TestCase):
         value = from_dict(TupleValues, {"values": [1, "two"]})
         self.assertEqual(value, TupleValues((1, "two")))
         self.assertEqual(to_dict(value), {"values": (1, "two")})
+
+    def test_function_argument_mappings_serialize_typed_values(self):
+        expected = {
+            "message": "hello",
+            "count": 2,
+            "nested": {"a": 3, "b": 4},
+            "values": [5, 6],
+            "callback": f"{increment.__module__}.increment",
+        }
+
+        def serialize_locals(message, count, nested, values, callback):
+            helper = "not a function argument"
+            as_dict = to_dict(locals(), type_class=function_serialization_values)
+            as_json = to_json(locals(), indent=None, type_class=function_serialization_values)
+            buffer = StringIO()
+            to_json(locals(), buffer, None, type_class=function_serialization_values)
+            with TemporaryDirectory() as directory:
+                path = Path(directory) / "function-values.json"
+                to_json(locals(), str(path), None, type_class=function_serialization_values)
+                with path.open() as in_f:
+                    from_path = json.load(in_f)
+            return as_dict, as_json, buffer.getvalue(), from_path, helper
+
+        as_dict, as_json, buffer_json, path_json, helper = serialize_locals(
+            "hello", 2, Nested(a=3, b=4), [5, 6], increment
+        )
+        self.assertEqual(as_dict, expected)
+        self.assertEqual(json.loads(as_json), expected)
+        self.assertEqual(json.loads(buffer_json), expected)
+        self.assertEqual(path_json, expected)
+        self.assertEqual(helper, "not a function argument")
 
     def test_json_helpers_accept_strings_file_objects_and_paths(self):
         value = ConversionValues(nested=Nested(a=2, b=4), mapping={1: [1.5, 2.5]})
