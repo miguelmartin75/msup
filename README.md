@@ -4,7 +4,7 @@
 uv pip install msup
 ```
 
-With no required dependencies and only 591 LOC (`wc -l msup/*.py`), this library enables you to:
+With no required dependencies and only 914 LOC (`wc -l msup/*.py`), this library enables you to:
 
 - create a CLI application from nested dataclass definitions (see [example](#example) below)
 - serialize/deserialize dataclasses or regular Python classes to/from JSON and Python dictionaries without dependencies
@@ -55,8 +55,10 @@ Serialization and de-serialization of:
 - create a PyTorch model and optimizer from config: [examples/pt_basic.py](./examples/pt_basic.py)
     - This example constructs Python classes, such as a `torch.optim.Adam`, or a user-provided optimizer class, e.g.
         ```bash
-        python examples/pt_basic.py test_optim_advanced --lr 0.42 --optim torch.optim.SGD
+        ./examples/pt_basic.py test_optim_advanced --lr 0.42 --optim torch.optim.SGD
         ```
+
+All examples are executable from the repository root. Run the full example integration suite with `just examples`.
 
 The following demonstrates automatically creating a multi-command CLI serializing a dataclass to JSON. You can find this example in [examples/multicli.py](./examples/multicli.py).
 
@@ -108,22 +110,22 @@ if __name__ == "__main__":
     })
 ```
 
-With this example, you can run the train or eval function via `python <script> {train,eval} [optional-args...]`, e.g.:
+With this example, you can run the train or eval function via `./examples/multicli.py {train,eval} [optional-args...]`, e.g.:
 
 ```bash
-PYTHONPATH=. python3 examples/multicli.py train
+./examples/multicli.py train
 ```
 
 Use an importable Python callable and reproduce a JSON configuration:
 
 ```bash
-PYTHONPATH=. python3 examples/multicli.py train --lr_step_fn examples.cli.callbacks.identity_step_fn --lr 0.1 --name identity
-PYTHONPATH=. python3 examples/multicli.py train --Args configs/identity.json --lr 0.2
+./examples/multicli.py train --lr_step_fn examples.cli.callbacks.identity_step_fn --lr 0.1 --name identity
+./examples/multicli.py train --Args configs/identity.json --lr 0.2
 ```
 
 Nested dataclasses can be read from a JSON file or JSON object from the CLI:
 
 ```bash
-PYTHONPATH=. python3 examples/multicli.py train --model_config configs/models/small.json
-PYTHONPATH=. python3 examples/multicli.py train --model_config '{"n_layers": 1}'
+./examples/multicli.py train --model_config configs/models/small.json
+./examples/multicli.py train --model_config '{"n_layers": 1}'
 ```

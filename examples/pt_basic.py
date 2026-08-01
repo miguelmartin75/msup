@@ -4,6 +4,7 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "msup",
+#     "numpy",
 #     "torch>=2",
 # ]
 #
@@ -32,20 +33,20 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     model: Annotated[ModelConfig, CliArg(help="model to use")] = field(default_factory=ModelConfig)
-    lr: float = 0.1  # NOTE: not realistic, for testing
+    lr: float = 0.1  # NOTE: not realistic, for demonstration
 
 
 @dataclass
 class TrainConfigAdvanced:
     model: Annotated[ModelConfig, CliArg(help="model to use")] = field(default_factory=ModelConfig)
-    lr: float = 0.1  # NOTE: not realistic, for testing
+    lr: float = 0.1  # NOTE: not realistic, for demonstration
     optim: Callable = torch.optim.SGD
 
 
 @dataclass
 class TrainConfigAdvancedAlt:
     model: Annotated[ModelConfig, CliArg(help="model to use")] = field(default_factory=ModelConfig)
-    lr: float = 0.1  # NOTE: not realistic, for testing
+    lr: float = 0.1  # NOTE: not realistic, for demonstration
     optim: str = "SGD"
 
 
