@@ -4,10 +4,10 @@ import os
 import sys
 from collections.abc import Callable as Callable2
 from dataclasses import MISSING, dataclass, field, is_dataclass
-from typing import Annotated, Any, Callable, TypeVar, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Callable, TypeVar, get_args, get_origin
 
 from msup.base import (
-    InitArg,
+    FieldSpec,
     effective_type,
     fields_or_init_kwargs,
     from_dict_value,
@@ -16,7 +16,6 @@ from msup.base import (
     is_optional,
     is_structured_model,
     to_json,
-    unwrap_annotated,
 )
 
 T = TypeVar("T")
@@ -33,11 +32,6 @@ class CliArg:
     pos: bool = False
     opt: bool = True
     secret: bool = False
-
-
-def unwrap_cliarg(annotation: Any) -> tuple[Any, CliArg | None]:
-    annotation, metadata = unwrap_annotated(annotation)
-    return annotation, cliarg_from_annotations(metadata)
 
 
 def cliarg_from_annotations(annotations: list[Any]) -> CliArg | None:
@@ -61,44 +55,6 @@ def strtobool(value: str) -> bool:
 def error_exit(msg: str, code: int = 1):
     print(f"[ERROR]: {msg}", file=sys.stderr)
     sys.exit(code)
-
-
-def command_args(func) -> tuple[str, type | list[InitArg]]:
-    signature = inspect.signature(func)
-    hints = get_type_hints(func, include_extras=True)
-    parameters = [parameter for parameter in signature.parameters.values() if parameter.name not in ("self", "cls")]
-
-    if not parameters:
-        raise TypeError(f"Command {getattr(func, '__name__', func)} must have at least one parameter")
-
-    for parameter in parameters:
-        if parameter.kind is parameter.POSITIONAL_ONLY:
-            raise TypeError(f"{parameter.name}: positional-only command parameters are not supported")
-        if parameter.kind is parameter.VAR_POSITIONAL:
-            raise TypeError(f"{parameter.name}: variadic *args command parameters are not supported")
-        if parameter.kind is parameter.VAR_KEYWORD:
-            raise TypeError(f"{parameter.name}: variadic **kwargs command parameters are not supported")
-
-    if len(parameters) == 1:
-        annotation, _ = unwrap_cliarg(hints.get(parameters[0].name, parameters[0].annotation))
-        if is_structured_model(annotation):
-            return "structured", annotation
-
-    result = []
-    for parameter in parameters:
-        if parameter.annotation is inspect.Parameter.empty:
-            raise TypeError(f"{parameter.name}: command parameters must have an annotation")
-        annotation, annotations = unwrap_annotated(hints.get(parameter.name, parameter.annotation))
-        result.append(
-            InitArg(
-                parameter.name,
-                annotation,
-                annotations,
-                MISSING if parameter.default is inspect.Parameter.empty else parameter.default,
-                MISSING,
-            )
-        )
-    return "direct", result
 
 
 def argument_type(annotation: type, field_name: str) -> type:
@@ -228,7 +184,7 @@ def _add_args(
             _add_args(parser, field_type, prefix=name, short_prefix=cli_arg.short, force_no_default=True)
 
 
-def add_direct_args(parser, command_args: list[InitArg], pos_arg_config: bool = False):
+def add_direct_args(parser, command_args: list[FieldSpec], pos_arg_config: bool = False):
     if pos_arg_config:
         parser.add_argument(
             "args",
@@ -386,7 +342,7 @@ def _from_cli_args(clazz: type, args, config: dict | None = None, prefix: str = 
     return clazz(**construct_args)
 
 
-def from_direct_cli_args(command_args: list[InitArg], args, config: dict | None = None) -> dict:
+def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | None = None) -> dict:
     config = {} if config is None else config
     result = {}
     for command_arg in command_args:
@@ -421,37 +377,68 @@ def cli(
     if isinstance(cmd_or_cmds, dict):
         seen = set()
         subparsers = parser.add_subparsers(help="subcommand help")
-        for cmd_fn, desc in cmd_or_cmds.items():
+        commands = cmd_or_cmds.items()
+    else:
+        subparsers = None
+        commands = [(cmd_or_cmds, None)]
+
+    metadata_marker = object()
+    for cmd_fn, desc in commands:
+        if subparsers is not None:
             cmd_name = cmd_fn.__name__
             if cmd_name in seen:
                 raise TypeError(f"{cmd_name} command occurs more than once")
             seen.add(cmd_name)
-            cmd_mode, command_arg_values = command_args(cmd_fn)
-            p = subparsers.add_parser(cmd_name, help=desc, argument_default=argparse.SUPPRESS)
-            p.set_defaults(func=cmd_fn, cmd_mode=cmd_mode, command_args=command_arg_values)
-            if cmd_mode == "structured":
-                _add_args(p, command_arg_values, pos_arg_config=pos_arg_config)
-            else:
-                add_direct_args(p, command_arg_values, pos_arg_config=pos_arg_config)
-        args = _parse_args(parser)
-        if hasattr(args, "func"):
-            if args.cmd_mode == "structured":
-                args.func(_from_cli_args(args.command_args, args, _config_values(args)))
-            else:
-                args.func(**from_direct_cli_args(args.command_args, args, _config_values(args)))
+            command_parser = subparsers.add_parser(cmd_name, help=desc, argument_default=argparse.SUPPRESS)
         else:
-            parser.print_help()
+            command_parser = parser
+
+        parameters = [
+            parameter
+            for parameter in inspect.signature(cmd_fn).parameters.values()
+            if parameter.name not in ("self", "cls")
+        ]
+        if not parameters:
+            raise TypeError(f"Command {getattr(cmd_fn, '__name__', cmd_fn)} must have at least one parameter")
+        for parameter in parameters:
+            if parameter.kind is parameter.POSITIONAL_ONLY:
+                raise TypeError(f"{parameter.name}: positional-only command parameters are not supported")
+            if parameter.kind is parameter.VAR_POSITIONAL:
+                raise TypeError(f"{parameter.name}: variadic *args command parameters are not supported")
+            if parameter.kind is parameter.VAR_KEYWORD:
+                raise TypeError(f"{parameter.name}: variadic **kwargs command parameters are not supported")
+            if parameter.annotation is inspect.Parameter.empty:
+                raise TypeError(f"{parameter.name}: command parameters must have an annotation")
+
+        command_fields = fields_or_init_kwargs(cmd_fn)
+        command_type = command_fields[0].annotation if len(parameters) == 1 else None
+        if not is_structured_model(command_type):
+            command_type = None
+        metadata_dest = "_msup_command"
+        metadata_fields = fields_or_init_kwargs(command_type) if command_type is not None else command_fields
+        while metadata_dest in {field.name for field in metadata_fields}:
+            metadata_dest = f"_{metadata_dest}"
+        command_parser.set_defaults(**{metadata_dest: (metadata_marker, cmd_fn, command_type, command_fields)})
+        if command_type is not None:
+            _add_args(command_parser, command_type, pos_arg_config=pos_arg_config)
+        else:
+            add_direct_args(command_parser, command_fields, pos_arg_config=pos_arg_config)
+
+    args = _parse_args(parser)
+    command = None
+    for value in vars(args).values():
+        if isinstance(value, tuple) and value and value[0] is metadata_marker:
+            command = value
+            break
+    if command is not None:
+        _, cmd_fn, command_type, command_fields = command
+        config = _config_values(args)
+        if command_type is not None:
+            cmd_fn(_from_cli_args(command_type, args, config))
+        else:
+            cmd_fn(**from_direct_cli_args(command_fields, args, config))
     else:
-        cmd_mode, command_arg_values = command_args(cmd_or_cmds)
-        if cmd_mode == "structured":
-            _add_args(parser, command_arg_values, pos_arg_config=pos_arg_config)
-        else:
-            add_direct_args(parser, command_arg_values, pos_arg_config=pos_arg_config)
-        args = _parse_args(parser)
-        if cmd_mode == "structured":
-            cmd_or_cmds(_from_cli_args(command_arg_values, args, _config_values(args)))
-        else:
-            cmd_or_cmds(**from_direct_cli_args(command_arg_values, args, _config_values(args)))
+        parser.print_help()
 
 
 def ex_default_callable(x: int):

@@ -170,6 +170,14 @@ class SubcommandArgs:
     value: int = 0
 
 
+@dataclass
+class CommandMetadataArgs:
+    func: str
+    command_type: str
+    command_fields: str
+    _msup_command: str
+
+
 def optional_list_command(args: OptionalListArgs):
     received.append(args)
 
@@ -270,6 +278,14 @@ def subcommand(args: SubcommandArgs):
     received.append(args)
 
 
+def command_metadata_command(args: CommandMetadataArgs):
+    received.append(args)
+
+
+def direct_command_metadata(func: str, command_type: str, command_fields: str, _msup_command: str):
+    received.append((func, command_type, command_fields, _msup_command))
+
+
 def direct_command(
     count: Annotated[int, CliArg(help="item count", short="c", env="MSUP_TEST_DIRECT_COUNT")],
     ratio: Annotated[float, CliArg(help="ratio")] = 1.5,
@@ -305,6 +321,10 @@ def direct_positional_command(
 
 def direct_subcommand(count: int, name: str = "default"):
     received.append((count, name))
+
+
+def direct_command_with_reserved_names(self: int, cls: str, count: int):
+    received.append((self, cls, count))
 
 
 class CliContractTests(unittest.TestCase):
@@ -573,6 +593,31 @@ class CliContractTests(unittest.TestCase):
             "mapping": None,
             "child": None,
         })
+
+    def test_direct_parameters_exclude_reserved_self_and_cls_names(self):
+        sys.argv = ["program", "--help"]
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as error:
+            cli(direct_command_with_reserved_names)
+        self.assertEqual(error.exception.code, 0)
+        self.assertIn("--count", output.getvalue())
+        self.assertNotIn("--self", output.getvalue())
+        self.assertNotIn("--cls", output.getvalue())
+
+    def test_command_metadata_does_not_collide_with_root_fields(self):
+        argv = [
+            "--func",
+            "function",
+            "--command_type",
+            "type",
+            "--command_fields",
+            "fields",
+            "--_msup_command",
+            "private",
+        ]
+        expected = ("function", "type", "fields", "private")
+        self.assertEqual(self.invoke(direct_command_metadata, argv), expected)
+        self.assertEqual(self.invoke(command_metadata_command, argv), CommandMetadataArgs(*expected))
 
     def test_direct_parameters_support_help_args_environment_and_cli_precedence(self):
         sys.argv = ["program", "--help"]
