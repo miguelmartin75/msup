@@ -27,10 +27,10 @@ jobs:
           enable-cache: true
 
       - name: Sync dev dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --extra pydantic
 
       - name: Run tests with coverage
-        run: uv run --group dev pytest --cov=msup --cov-report=term-missing
+        run: uv run --group dev --extra pydantic pytest --cov=msup --cov-report=term-missing
 
   build:
     runs-on: ubuntu-latest
