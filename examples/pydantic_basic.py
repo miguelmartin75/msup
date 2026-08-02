@@ -9,9 +9,7 @@
 # ///
 
 from typing import Annotated
-
 from pydantic import BaseModel, Field
-
 from msup.cli import CliArg, cli
 
 
