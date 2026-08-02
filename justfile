@@ -44,7 +44,8 @@ examples:
     ./examples/pydantic_basic.py --help
     ./examples/pydantic_basic.py --name integration --values 1 2
     ./examples/function_args.py --help
-    ./examples/function_args.py --name integration --count 2
+    ./examples/function_args.py show --name integration --count 2
+    ./examples/function_args.py echo --name integration --count 2
     ./examples/readme/train.py --optimizer.lr 0.01
     ./examples/readme/subcommands.py train --name integration
     ./examples/readme/regular_class.py
