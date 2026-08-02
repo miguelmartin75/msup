@@ -51,3 +51,9 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = ""
+
+[tool.ty.analysis]
+replace-imports-with-any = ["torch.**"]
+
+[tool.ty.rules]
+empty-body = "ignore"
