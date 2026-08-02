@@ -21,38 +21,6 @@ With no required dependencies and only 921 LOC (`wc -l msup/*.py`), this library
 
 Yes, the small LOC is an intentional feature.
 
-# Install
-
-```bash
-uv pip install msup
-```
-
-# Features
-
-- Typed conversion and serialization
-    - Primitives: `str`, `int`, `float`, and `bool`.
-    - Other types: `Any`, optionals, and unambiguous unions. Non-optional unions are conversion-only, not CLI annotations.
-    - Collections: lists, dictionaries, and tuples convert recursively. The CLI supports lists and variable-length tuples; fixed-length tuples are conversion-only.
-    - Importable callables use `module.name` strings for loading and serialization.
-    - `from_dict`, `to_dict`, `from_json`, and `to_json` convert typed values. `to_kwargs` prepares matching constructor settings, for example for `torch.optim.Adam`.
-    - `to_json(locals(), type_class=handler)` serializes only the handler's declared arguments, using its annotations.
-- CLI commands
-    - Use direct typed functions or one dataclass or Pydantic v2 model parameter. A mapping of functions creates named subcommands.
-    - `CliArg(pos=True)` makes a value positional. A final positional list or variable-length tuple with `opt=False` receives all remaining arguments.
-- CLI configuration and metadata
-    - `Annotated[T, CliArg(...)]` sets help text, short options, environment variables, positional and optional behavior, and hides secret defaults from help.
-    - Nested dataclass and Pydantic v2 values accept dotted options such as `optimizer.lr`, inline JSON objects, and JSON file paths.
-    - Missing values use defaults and default factories. Precedence is: explicit option, `CliArg(env=...)`, `--Args` JSON (inline or from a `.json` file), then the default.
-- JSON I/O
-    - `from_json` reads strings, `StringIO`, other file-like streams, and paths. `to_json` returns JSON or writes to file-like streams and `.json` paths.
-
-# Design Philosophy
-
-- simplicity
-- minimal LOC
-- no dependencies by default, so dependencies are opt-in
-- opinionated to reduce boilerplate
-
 # More Examples
 
 Nested dataclasses produce nested options ([source](./examples/readme/train.py)):
@@ -125,3 +93,41 @@ Here's some more examples:
 - Simple CLI: [examples/simple.py](./examples/simple.py)
 - Pydantic v2 CLI: [examples/pydantic_basic.py](./examples/pydantic_basic.py)
 - Regular-class and PyTorch construction: [examples/pt_basic.py](./examples/pt_basic.py)
+
+# Features
+
+- Typed conversion and serialization
+    - Primitives: `str`, `int`, `float`, and `bool`.
+    - Other types: `Any`, optionals, and unambiguous unions. Non-optional unions are conversion-only, not CLI annotations.
+    - Collections: lists, dictionaries, and tuples convert recursively. The CLI supports lists and variable-length tuples; fixed-length tuples are conversion-only.
+    - Importable callables use `module.name` strings for loading and serialization.
+    - `from_dict`, `to_dict`, `from_json`, and `to_json` convert typed values. `to_kwargs` prepares matching constructor settings, for example for `torch.optim.Adam`.
+    - `to_json(locals(), type_class=handler)` serializes only the handler's declared arguments, using its annotations.
+- CLI commands
+    - Use direct typed functions or one dataclass or Pydantic v2 model parameter. A mapping of functions creates named subcommands.
+    - `CliArg(pos=True)` makes a value positional. A final positional list or variable-length tuple with `opt=False` receives all remaining arguments.
+- CLI configuration and metadata
+    - `Annotated[T, CliArg(...)]` sets help text, short options, environment variables, positional and optional behavior, and hides secret defaults from help.
+    - Nested dataclass and Pydantic v2 values accept dotted options such as `optimizer.lr`, inline JSON objects, and JSON file paths.
+    - Missing values use defaults and default factories. Precedence is: explicit option, `CliArg(env=...)`, `--Args` JSON (inline or from a `.json` file), then the default.
+- JSON I/O
+    - `from_json` reads strings, `StringIO`, other file-like streams, and paths. `to_json` returns JSON or writes to file-like streams and `.json` paths.
+
+# Design Philosophy
+
+- simplicity
+- minimal LOC
+- no dependencies by default, so dependencies are opt-in
+- opinionated to reduce boilerplate
+
+# Install
+
+```bash
+uv pip install msup
+```
+
+or with a `pyproject.toml`
+
+```
+uv add msup
+```
