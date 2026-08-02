@@ -1,18 +1,34 @@
 # **M**icro **S**erialization **U**tilities for **P**ython
 
 ```python
+from typing import Annotated
 from msup.base import to_json
-from msup.cli import cli
+from msup.cli import cli, CliArg
 
-def greet(name: str, count: int = 1):
-    print(to_json(locals(), type_class=greet))
+# NOTE: help shows up when `--help` is provided
+def show(name: Annotated[str, CliArg(short="n", help="your name")], count: int = 1):
+    print(to_json(locals(), type_class=show))  # encode the function args to JSON
 
-cli(greet)
+def echo(name: Annotated[str, CliArg(short="n", help="your name")], count: int = 1):
+    print([name] * count)
+
+# creates a CLI interface with commands 'show' and 'echo'
+cli({
+    show: "show the input arguments as JSON", 
+    echo: "echo your name N times", 
+})
+# or for a single command CLI
+# cli(show)
 ```
 
+Run the above:
 ```bash
-./examples/function_args.py --name 'hello world' --count 2
+./examples/function_args.py echo --name 'bob' --count 2
 ```
+
+or, provide JSON, e.g. `./examples/function_args.py echo --Args '{}'`; `--Args` can point to a filepath too. See [More Examples](#more-examples) below or in the [examples](./examples) folder.
+
+---
 
 With no required dependencies and only 921 LOC (`wc -l msup/*.py`), this library lets you:
 
@@ -47,22 +63,27 @@ cli(train)
 ./examples/readme/train.py --optimizer.lr 0.01
 ```
 
-A dict of functions creates subcommands ([source](./examples/readme/subcommands.py)):
+A Pydantic v2 model provides typed CLI options ([source](./examples/pydantic_basic.py)):
 
 ```python
-from msup.cli import cli
+from typing import Annotated
 
-def train(name: str):
-    print(name)
+from pydantic import BaseModel, Field
 
-def evaluate(name: str):
-    print(name)
+from msup.cli import CliArg, cli
 
-cli({train: "train a model", evaluate: "evaluate a model"})
+class Args(BaseModel):
+    name: Annotated[str, CliArg(help="name to greet")] = "world"
+    values: Annotated[list[int], CliArg(help="values to show", short="v")] = Field(default_factory=lambda: [1, 2])
+
+def greet(args: Args):
+    print(f"hello, {args.name}: {args.values}")
+
+cli(greet)
 ```
 
 ```bash
-./examples/readme/subcommands.py train --name integration
+./examples/pydantic_basic.py --name integration --values 1 2
 ```
 
 `Optimizer` is a regular Python class that can be constructed and serialized to/from a dict or JSON.
@@ -117,7 +138,7 @@ Here's some more examples:
 
 - simplicity
 - minimal LOC
-- no dependencies by default, so dependencies are opt-in
+- no dependencies by default; dependencies are opt-in (i.e. Pydantic is optional)
 - opinionated to reduce boilerplate
 
 # Install
