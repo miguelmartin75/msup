@@ -4,7 +4,7 @@ import os
 import sys
 from collections.abc import Callable as Callable2
 from dataclasses import MISSING, dataclass, field, is_dataclass
-from typing import Annotated, Any, Callable, TypeVar, get_args, get_origin
+from typing import Annotated, Any, Callable, cast, get_args, get_origin
 
 from msup.base import (
     FieldSpec,
@@ -18,10 +18,8 @@ from msup.base import (
     to_json,
 )
 
-T = TypeVar("T")
 
-
-def cli(cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], **argsparse_kwargs): ...
+def cli(cmd_or_cmds: Callable[..., Any] | dict[Callable[..., Any], str], **argsparse_kwargs): ...
 
 
 @dataclass(frozen=True)
@@ -370,14 +368,15 @@ def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | Non
 
 
 def cli(
-    cmd_or_cmds: Callable[[T], Any] | dict[Callable[[T], Any], str], pos_arg_config: bool = False, **argsparse_kwargs
+    cmd_or_cmds: Callable[..., Any] | dict[Callable[..., Any], str], pos_arg_config: bool = False, **argsparse_kwargs
 ):
     argsparse_kwargs.setdefault("argument_default", argparse.SUPPRESS)
     parser = argparse.ArgumentParser(**argsparse_kwargs)
+    commands: list[tuple[Callable[..., Any], str | None]]
     if isinstance(cmd_or_cmds, dict):
         seen = set()
         subparsers = parser.add_subparsers(help="subcommand help")
-        commands = cmd_or_cmds.items()
+        commands = list(cast(dict[Callable[..., Any], str], cmd_or_cmds).items())
     else:
         subparsers = None
         commands = [(cmd_or_cmds, None)]
@@ -385,7 +384,7 @@ def cli(
     metadata_marker = object()
     for cmd_fn, desc in commands:
         if subparsers is not None:
-            cmd_name = cmd_fn.__name__
+            cmd_name = getattr(cmd_fn, "__name__")
             if cmd_name in seen:
                 raise TypeError(f"{cmd_name} command occurs more than once")
             seen.add(cmd_name)
@@ -398,8 +397,6 @@ def cli(
             for parameter in inspect.signature(cmd_fn).parameters.values()
             if parameter.name not in ("self", "cls")
         ]
-        if not parameters:
-            raise TypeError(f"Command {getattr(cmd_fn, '__name__', cmd_fn)} must have at least one parameter")
         for parameter in parameters:
             if parameter.kind is parameter.POSITIONAL_ONLY:
                 raise TypeError(f"{parameter.name}: positional-only command parameters are not supported")
@@ -421,7 +418,7 @@ def cli(
         command_parser.set_defaults(**{metadata_dest: (metadata_marker, cmd_fn, command_type, command_fields)})
         if command_type is not None:
             _add_args(command_parser, command_type, pos_arg_config=pos_arg_config)
-        else:
+        elif command_fields:
             add_direct_args(command_parser, command_fields, pos_arg_config=pos_arg_config)
 
     args = _parse_args(parser)

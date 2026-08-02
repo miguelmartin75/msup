@@ -323,6 +323,14 @@ def direct_subcommand(count: int, name: str = "default"):
     received.append((count, name))
 
 
+def zero_parameter_command():
+    received.append("zero parameter command")
+
+
+def zero_parameter_subcommand():
+    received.append("zero parameter subcommand")
+
+
 def direct_command_with_reserved_names(self: int, cls: str, count: int):
     received.append((self, cls, count))
 
@@ -661,10 +669,15 @@ class CliContractTests(unittest.TestCase):
         cli({direct_subcommand: "run the direct subcommand"})
         self.assertEqual(received.pop(), (4, "selected"))
 
-    def test_invalid_direct_handler_signatures_are_rejected_before_parsing(self):
-        def zero_parameter_command():
-            pass
+    def test_zero_parameter_command_is_invoked(self):
+        self.assertEqual(self.invoke(zero_parameter_command, []), "zero parameter command")
 
+    def test_zero_parameter_subcommand_is_invoked(self):
+        sys.argv = ["program", "zero_parameter_subcommand"]
+        cli({zero_parameter_subcommand: "run the zero-parameter subcommand"})
+        self.assertEqual(received.pop(), "zero parameter subcommand")
+
+    def test_invalid_direct_handler_signatures_are_rejected_before_parsing(self):
         def unannotated_command(value):
             pass
 
@@ -684,7 +697,6 @@ class CliContractTests(unittest.TestCase):
             pass
 
         cases = [
-            (zero_parameter_command, "parameter"),
             (unannotated_command, "value.*annotation"),
             (positional_only_command, "value.*positional"),
             (variadic_positional_command, "values.*variadic"),
@@ -730,7 +742,12 @@ class CliContractTests(unittest.TestCase):
         sys.argv = ["program"]
         output = StringIO()
         with redirect_stdout(output):
-            cli({subcommand: "run the subcommand"})
+            cli(
+                {
+                    subcommand: "run the subcommand",
+                    zero_parameter_subcommand: "run the zero-parameter subcommand",
+                }
+            )
         self.assertIn("subcommand", output.getvalue())
         self.assertEqual(received, [])
 
