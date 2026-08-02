@@ -93,15 +93,29 @@ def examples() -> None:
 
 
 def lint() -> None:
+    run("uv run --group dev ruff check --fix .")
+
+
+def lint_check() -> None:
     run("uv run --group dev ruff check .")
 
 
-def type() -> None:
+def format() -> None:
+    run("uv run --group dev ruff format .")
+
+
+def format_check() -> None:
+    run("uv run --group dev ruff format --check .")
+
+
+def type_check() -> None:
     run("uv run --group dev ty check .")
 
 
 def check() -> None:
-    lint()
+    type_check()
+    lint_check()
+    format_check()
 
 
 def tag_release(version: Annotated[str, CliArg(pos=True, opt=False)]) -> None:
@@ -132,7 +146,9 @@ def publish_release() -> None:
             "-m",
             "twine",
             "upload",
-            *[str(path) for path in dist.glob("*")],
+            "--verbose",
+            *[str(path) for path in dist.glob("*.tar.gz")],
+            *[str(path) for path in dist.glob("*.whl")],
         ]
     )
 
@@ -144,9 +160,12 @@ if __name__ == "__main__":
             test: "run the test suite",
             coverage: "run the test suite with coverage",
             examples: "run every executable example",
-            lint: "lint the repository",
-            type: "type check the repository",
-            check: "run the lint check",
+            lint: "apply lint fixes",
+            lint_check: "check repository linting",
+            format: "format the repository",
+            format_check: "check repository formatting",
+            type_check: "type check the repository",
+            check: "run type, lint, and formatting checks",
             tag_release: "create and push a release tag",
             publish_release: "build and publish a release",
         },
