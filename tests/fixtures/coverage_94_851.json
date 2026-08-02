@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "branch_coverage": false,
+    "show_contexts": false,
+    "timestamp": "2026-08-01T00:00:00.000000",
+    "version": "7.10.0"
+  },
+  "files": {},
+  "totals": {
+    "covered_lines": 608,
+    "excluded_lines": 0,
+    "missing_lines": 33,
+    "num_statements": 641,
+    "percent_covered": 94.85179407176287,
+    "percent_covered_display": "95"
+  }
+}

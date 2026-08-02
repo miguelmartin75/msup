@@ -1,5 +1,7 @@
 # **M**icro **S**erialization **U**tilities for **P**ython
 
+[![coverage](https://miguelmartin75.github.io/msup/coverage.svg)](https://miguelmartin75.github.io/msup/coverage/)
+
 > [!TIP]
 > msup can be a [just](https://github.com/casey/just) replacement. See [just.py](./just.py) for an executable task runner.
 
