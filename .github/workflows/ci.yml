@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   test:
+    name: "Tests"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -27,10 +28,10 @@ jobs:
           enable-cache: true
 
       - name: Sync dev dependencies
-        run: ./just.py setup_dev
+        run: ./run.py setup_dev
 
       - name: Run tests with coverage
-        run: ./just.py coverage
+        run: ./run.py coverage
 
       - name: Upload coverage Pages artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -38,8 +39,42 @@ jobs:
         with:
           path: coverage-artifacts/site
 
+  quality:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Type checking
+            command: type_check
+          - name: Linting
+            command: lint_check
+          - name: Formatting
+            command: format_check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync dev dependencies
+        run: ./run.py setup_dev
+
+      - name: Run check
+        run: ./run.py ${{ matrix.command }}
+
   deploy-coverage:
-    needs: test
+    needs: [test, quality]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -54,9 +89,10 @@ jobs:
         uses: actions/deploy-pages@v4
 
   build:
+    name: "Distribution Build"
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: test
+    needs: [test, quality]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
