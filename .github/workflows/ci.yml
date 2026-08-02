@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: "Tests"
+    name: Tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -53,6 +53,8 @@ jobs:
             command: lint_check
           - name: Formatting
             command: format_check
+          - name: Examples
+            command: examples
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
