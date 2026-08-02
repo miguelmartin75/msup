@@ -10,11 +10,12 @@ from typing import Annotated, Any, Callable, TypeVar, Union, get_args, get_origi
 T = TypeVar("T")
 
 
-def to_kwargs(clazz: type, x: T) -> dict: ...
-def from_dict(clazz: type, x: dict) -> T: ...
-def to_dict(x: T, type_class: type | Callable[..., Any] | None = None) -> dict: ...
+# fmt: off
+def to_kwargs(clazz: type | Callable[..., Any], x: Any) -> dict[str, Any]: ...
+def from_dict(clazz: type[T], x: dict[Any, Any]) -> T: ...
+def to_dict(x: Any, type_class: type | Callable[..., Any] | None = None) -> dict[str, Any]: ...
 def to_json(
-    x: T,
+    x: Any,
     file_like=None,
     indent: int | None = 2,
     *,
@@ -22,6 +23,7 @@ def to_json(
 ) -> str | None: ...
 def is_pydantic_model(candidate: type | object) -> bool: ...
 def is_structured_model(candidate: type | object) -> bool: ...
+# fmt: on
 
 
 PydanticBaseModel: type | None = None
@@ -78,7 +80,7 @@ def is_structured_model(candidate: type | object) -> bool:
     return result
 
 
-def from_json(clazz: type, s: str | None = None, file_like=None, path: str | None = None) -> T:
+def from_json(clazz: type[T], s: str | None = None, file_like=None, path: str | None = None) -> T:
     if path:
         assert os.path.exists(path), f"{path} does not exist"
         with open(path) as in_f:
@@ -86,6 +88,7 @@ def from_json(clazz: type, s: str | None = None, file_like=None, path: str | Non
     elif file_like:
         result = from_dict(clazz, json.load(file_like))
     else:
+        assert s is not None, "s must be provided when file_like and path are absent"
         result = from_dict(clazz, json.loads(s))
     return result
 
@@ -113,7 +116,7 @@ def to_json(
     return result
 
 
-def has_default_value(f):
+def has_default_value(f: FieldSpec) -> bool:
     return f.default is not MISSING or f.default_factory is not MISSING
 
 
@@ -138,7 +141,8 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
     elif is_pydantic_model(target):
         hints = get_type_hints(target, include_extras=True)
         result = []
-        for name, model_field in target.model_fields.items():
+        pydantic_target: Any = target
+        for name, model_field in pydantic_target.model_fields.items():
             default = MISSING if model_field.is_required() else model_field.default
             default_factory = model_field.default_factory if model_field.default_factory is not None else MISSING
             annotation, annotations = unwrap_annotated(hints.get(name, model_field.annotation))
@@ -161,7 +165,7 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
     return result
 
 
-def load_callable(name: str):
+def load_callable(name: str) -> Any:
     idx = name.rfind(".")
     assert idx != -1, f"expected <module_name>.<name>, got {name}"
     module_name = name[0:idx]
@@ -170,11 +174,11 @@ def load_callable(name: str):
     return getattr(mod, fn_name)
 
 
-def maybe_idx(xs: list, idx: int, default: Any = None) -> Any:
+def maybe_idx(xs: tuple[Any, ...] | list[Any], idx: int, default: Any = None) -> Any:
     return xs[idx] if idx < len(xs) else default
 
 
-def get_optional_type(annotation: type) -> type | None:
+def get_optional_type(annotation: Any) -> Any | None:
     annotation, _ = unwrap_annotated(annotation)
     args = get_args(annotation)
     if get_origin(annotation) in (Union, UnionType) and len(args) == 2 and type(None) in args:
@@ -184,7 +188,7 @@ def get_optional_type(annotation: type) -> type | None:
     return result
 
 
-def get_collection_args(annotation: type, count: int = 0) -> tuple[type, ...]:
+def get_collection_args(annotation: Any, count: int = 0) -> tuple[Any, ...]:
     annotation, _ = unwrap_annotated(annotation)
     origin = annotation_origin(annotation)
     args = get_args(annotation)
@@ -205,16 +209,16 @@ def get_collection_args(annotation: type, count: int = 0) -> tuple[type, ...]:
     return result
 
 
-def is_optional(annotation: type) -> bool:
+def is_optional(annotation: Any) -> bool:
     return get_optional_type(annotation) is not None
 
 
-def annotation_origin(annotation: type) -> type:
+def annotation_origin(annotation: Any) -> Any:
     annotation, _ = unwrap_annotated(annotation)
     return get_origin(annotation) or annotation
 
 
-def effective_type(annotation: type, field_name: str) -> type:
+def effective_type(annotation: Any, field_name: str) -> Any:
     annotation, _ = unwrap_annotated(annotation)
     optional_type = get_optional_type(annotation)
     if optional_type is not None:
@@ -226,7 +230,7 @@ def effective_type(annotation: type, field_name: str) -> type:
     return result
 
 
-def union_member(annotation: type, concrete_type: type, field_name: str = "value") -> type:
+def union_member(annotation: Any, concrete_type: type, field_name: str = "value") -> Any:
     candidates = []
     for member in get_args(annotation):
         if member is type(None):
@@ -247,7 +251,7 @@ def union_member(annotation: type, concrete_type: type, field_name: str = "value
     return result
 
 
-def is_compat(field_type: type, concrete_type: type) -> tuple[bool, type | None]:
+def is_compat(field_type: Any, concrete_type: type) -> tuple[bool, Any | None]:
     optional_type = get_optional_type(field_type)
     if concrete_type is type(None):
         return optional_type is not None, type(None) if optional_type is not None else None
@@ -282,7 +286,7 @@ def is_compat(field_type: type, concrete_type: type) -> tuple[bool, type | None]
             return origin is concrete_origin, origin if origin is concrete_origin else None
 
 
-def dict_from_str(x: str) -> dict:
+def dict_from_str(x: str) -> dict[Any, Any]:
     assert isinstance(x, str)
     if x.startswith("{"):
         result = json.loads(x)
@@ -295,7 +299,7 @@ def dict_from_str(x: str) -> dict:
     return result
 
 
-def from_dict_value(x: T, field_type: type, concrete_type: type, field_name: str):
+def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: str) -> Any:
     origin = annotation_origin(field_type)
     if x is None:
         if is_optional(field_type) or field_type is Any:
@@ -380,7 +384,7 @@ def from_dict_value(x: T, field_type: type, concrete_type: type, field_name: str
     return result
 
 
-def to_dict_value(x: T, field_type: type):
+def to_dict_value(x: Any, field_type: Any) -> Any:
     origin = annotation_origin(field_type)
     optional_type = get_optional_type(field_type)
     if x is None:
@@ -413,15 +417,17 @@ def to_dict_value(x: T, field_type: type):
         return x
 
 
-def to_dict(x: T, type_class: type | Callable[..., Any] | None = None) -> dict:
+def to_dict(x: Any, type_class: type | Callable[..., Any] | None = None) -> dict[str, Any]:
     if type_class is None and is_pydantic_model(x):
-        result = x.model_dump()
+        pydantic_model: Any = x
+        result = pydantic_model.model_dump()
     else:
-        result = {}
+        result: dict[str, Any] = {}
         field_source = type(x) if type_class is None else type_class
         for f in fields_or_init_kwargs(field_source):
             if isinstance(x, Mapping) and f.name in x:
-                value = x[f.name]
+                mapping: Mapping[Any, Any] = x
+                value = mapping[f.name]
                 result[f.name] = to_dict_value(value, f.annotation or type(value))
             elif not isinstance(x, Mapping) and hasattr(x, f.name):
                 value = getattr(x, f.name)
@@ -429,8 +435,8 @@ def to_dict(x: T, type_class: type | Callable[..., Any] | None = None) -> dict:
     return result
 
 
-def to_kwargs(clazz: type, x: T) -> dict:
-    result = {}
+def to_kwargs(clazz: type | Callable[..., Any], x: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {}
     for f in fields_or_init_kwargs(clazz):
         if isinstance(x, dict):
             if f.name in x:
@@ -440,11 +446,12 @@ def to_kwargs(clazz: type, x: T) -> dict:
     return result
 
 
-def from_dict(clazz: type, x: dict) -> T:
+def from_dict(clazz: type[T], x: dict[Any, Any]) -> T:
     if is_pydantic_model(clazz):
-        result = clazz.model_validate(x)
+        pydantic_model: Any = clazz
+        result = pydantic_model.model_validate(x)
     else:
-        construct_args = {}
+        construct_args: dict[str, Any] = {}
         for f in fields_or_init_kwargs(clazz):
             if f.name in x:
                 field_type = f.annotation or type(x[f.name])

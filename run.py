@@ -22,9 +22,7 @@ from typing import Annotated
 from msup.cli import CliArg, cli
 from scripts.generate_coverage_badge import generate_badge
 
-
 repo_root = Path(__file__).parent
-
 
 def run(cmd: Sequence[str] | str) -> None:
     args = shlex.split(cmd) if isinstance(cmd, str) else cmd
@@ -35,14 +33,12 @@ def run(cmd: Sequence[str] | str) -> None:
     if result.returncode:
         sys.exit(result.returncode)
 
-
 def setup_dev() -> None:
     run("uv sync --group dev")
 
 
 def test() -> None:
     run("uv run --group dev --extra pydantic pytest")
-
 
 def coverage() -> None:
     run(
@@ -55,7 +51,6 @@ def coverage() -> None:
         repo_root / "coverage-artifacts/coverage.json",
         repo_root / "coverage-artifacts/site/coverage.svg",
     )
-
 
 def examples() -> None:
     with TemporaryDirectory() as temp_dir:
@@ -91,18 +86,28 @@ def examples() -> None:
         run("./examples/readme/regular_class.py")
         run("./examples/remainder.py --cwd build --retries 2 run --target staging --verbose")
 
-
 def lint() -> None:
+    run("uv run --group dev ruff check --fix .")
+
+
+def lint_check() -> None:
     run("uv run --group dev ruff check .")
 
+def format() -> None:
+    run("uv run --group dev ruff format .")
 
-def type() -> None:
+
+def format_check() -> None:
+    run("uv run --group dev ruff format --check .")
+
+def type_check() -> None:
     run("uv run --group dev ty check .")
 
 
 def check() -> None:
-    lint()
-
+    type_check()
+    lint_check()
+    format_check()
 
 def tag_release(version: Annotated[str, CliArg(pos=True, opt=False)]) -> None:
     if not version:
@@ -113,7 +118,6 @@ def tag_release(version: Annotated[str, CliArg(pos=True, opt=False)]) -> None:
     run(["git", "tag", "-a", f"v{version}", "-m", f"Release {version}"])
     run("git push origin HEAD")
     run(["git", "push", "origin", f"v{version}"])
-
 
 def publish_release() -> None:
     dist = repo_root / "dist"
@@ -138,7 +142,6 @@ def publish_release() -> None:
         ]
     )
 
-
 if __name__ == "__main__":
     cli(
         {
@@ -146,11 +149,14 @@ if __name__ == "__main__":
             test: "run the test suite",
             coverage: "run the test suite with coverage",
             examples: "run every executable example",
-            lint: "lint the repository",
-            type: "type check the repository",
-            check: "run the lint check",
+            lint: "apply lint fixes",
+            lint_check: "check repository linting",
+            format: "format the repository",
+            format_check: "check repository formatting",
+            type_check: "type check the repository",
+            check: "run type, lint, and formatting checks",
             tag_release: "create and push a release tag",
             publish_release: "build and publish a release",
         },
-        description="Project task runner and justfile replacement.",
+        description="Repository-local task runner.",
     )

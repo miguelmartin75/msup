@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from typing import Annotated, Callable
 
 from examples.cli.callbacks import cosine_warmup_lr_step
-from msup.cli import CliArg, cli, to_json
+from msup.base import to_json
+from msup.cli import CliArg, cli
 
 
 @dataclass
