@@ -436,30 +436,3 @@ def cli(
             cmd_fn(**from_direct_cli_args(command_fields, args, config))
     else:
         parser.print_help()
-
-
-def ex_default_callable(x: int):
-    print("ex_default_callable", x)
-
-
-def ex_other_callable(x: int):
-    print("ex_other_callable", x)
-
-
-@dataclass
-class ExampleArgs:
-    name: str
-    x: int = 3
-    y: float = 10
-    zs: Annotated[list[float], CliArg(help="a list of zs")] = field(default_factory=list)
-    some_callable: Callable[[int], None] = ex_default_callable
-    debug: bool = False
-
-
-def example(args: ExampleArgs):
-    print(to_json(args, indent=2))
-    args.some_callable(3)
-
-
-if __name__ == "__main__":
-    cli(example)

@@ -3,7 +3,7 @@
 [![coverage](https://miguelmartin75.github.io/msup/coverage.svg)](https://miguelmartin75.github.io/msup/coverage/)
 
 > [!TIP]
-> msup can be a [just](https://github.com/casey/just) replacement. See [just.py](./just.py) for an executable task runner.
+> msup can be used as a [just](https://github.com/casey/just) replacement. See [just.py](./just.py).
 
 ```python
 from typing import Annotated
@@ -35,7 +35,7 @@ or, provide JSON, e.g. `./examples/function_args.py echo --Args '{"name": "bob",
 
 ---
 
-With no required dependencies and only 918 LOC (`wc -l msup/*.py`), this library lets you:
+With no required dependencies and only 891 LOC (`wc -l msup/*.py`), this library lets you:
 
 - create CLIs from typed functions and nested dataclass or Pydantic v2 definitions
 - construct regular Python classes from their `__init__` parameters and serialize or deserialize regular classes, dataclasses, and Pydantic v2 models as JSON and Python dictionaries
