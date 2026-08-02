@@ -22,7 +22,6 @@ from typing import Annotated
 from msup.cli import CliArg, cli
 from scripts.generate_coverage_badge import generate_badge
 
-
 repo_root = Path(__file__).parent
 
 
@@ -93,20 +92,34 @@ def examples() -> None:
 
 
 def lint() -> None:
+    run("uv run --group dev ruff check --fix .")
+
+
+def lint_check() -> None:
     run("uv run --group dev ruff check .")
 
 
-def type() -> None:
+def format() -> None:
+    run("uv run --group dev ruff format .")
+
+
+def format_check() -> None:
+    run("uv run --group dev ruff format --check .")
+
+
+def type_check() -> None:
     run("uv run --group dev ty check .")
 
 
 def check() -> None:
-    lint()
+    type_check()
+    lint_check()
+    format_check()
 
 
 def tag_release(version: Annotated[str, CliArg(pos=True, opt=False)]) -> None:
     if not version:
-        raise SystemExit(1)
+        sys.exit(1)
     run(["uv", "version", version, "--frozen"])
     run("git add pyproject.toml uv.lock")
     run(["git", "commit", "-m", f"Release {version}"])
@@ -121,6 +134,7 @@ def publish_release() -> None:
         dist.unlink()
     elif dist.exists():
         shutil.rmtree(dist)
+
     run(["uv", "build", "--out-dir", str(dist)])
     run(
         [
@@ -146,11 +160,14 @@ if __name__ == "__main__":
             test: "run the test suite",
             coverage: "run the test suite with coverage",
             examples: "run every executable example",
-            lint: "lint the repository",
-            type: "type check the repository",
-            check: "run the lint check",
+            lint: "apply lint fixes",
+            lint_check: "check repository linting",
+            format: "format the repository",
+            format_check: "check repository formatting",
+            type_check: "type check the repository",
+            check: "run type, lint, and formatting checks",
             tag_release: "create and push a release tag",
             publish_release: "build and publish a release",
         },
-        description="Project task runner and justfile replacement.",
+        description="Repository-local task runner.",
     )
