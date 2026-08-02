@@ -1,7 +1,7 @@
 [project]
 name = "msup"
 description = "Micro serialization utilities for Python with CLI support."
-version = "0.2.0"
+version = "1.0"
 requires-python = ">= 3.12"
 license = "MIT"
 authors = [
