@@ -16,7 +16,7 @@ from msup.cli import CliArg, cli
 
 @dataclass
 class DatasetConfig:
-    target: Annotated[Callable, CliArg(help="dataset class path")] = None
+    target: Annotated[Callable | None, CliArg(help="dataset class path")] = None
     name: Annotated[str | None, CliArg(help="name of dataset")] = None
 
 

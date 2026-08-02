@@ -4,7 +4,7 @@ from dataclasses import MISSING, dataclass, field as dataclass_field
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Annotated, Any, Callable, Union
+from typing import Annotated, Any, Callable, Union, cast
 
 from msup.base import (
     dict_from_str,
@@ -172,7 +172,7 @@ class BasicTests(unittest.TestCase):
     def test_callable_annotation_accepts_direct_callables_and_rejects_invalid_serialization(self):
         self.assertIs(from_dict(CallableValue, {"callback": increment}).callback, increment)
         with self.assertRaisesRegex(TypeError, "expected callable value"):
-            to_dict(CallableValue(3))
+            to_dict(CallableValue(cast(Callable[[int], int], 3)))
 
     def test_ambiguous_unions_and_invalid_dict_strings_are_rejected(self):
         @dataclass
@@ -281,6 +281,7 @@ class BasicTests(unittest.TestCase):
     def test_json_helpers_accept_strings_file_objects_and_paths(self):
         value = ConversionValues(nested=Nested(a=2, b=4), mapping={1: [1.5, 2.5]})
         serialized = to_json(value, indent=None)
+        assert serialized is not None
         self.assertEqual(from_json(ConversionValues, s=serialized), value)
 
         buffer = StringIO()
