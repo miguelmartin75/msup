@@ -23,7 +23,7 @@ Yes, the small LOC is an intentional feature.
 
 # More Examples
 
-Nested dataclasses produce nested options ([source](./examples/readme/train.py)):
+Nested dataclasses produce nested options, e.g. `--class.field` ([source](./examples/readme/train.py)):
 
 ```python
 from dataclasses import dataclass, field
@@ -47,7 +47,7 @@ cli(train)
 ./examples/readme/train.py --optimizer.lr 0.01
 ```
 
-A mapping of functions creates subcommands ([source](./examples/readme/subcommands.py)):
+A dict of functions creates subcommands ([source](./examples/readme/subcommands.py)):
 
 ```python
 from msup.cli import cli
@@ -65,7 +65,7 @@ cli({train: "train a model", evaluate: "evaluate a model"})
 ./examples/readme/subcommands.py train --name integration
 ```
 
-`Optimizer` is a regular class that can be built from a dictionary and serialized to a dictionary or JSON. CLI commands require typed functions, dataclasses, or Pydantic v2 models. `to_kwargs` prepares matching settings for `torch.optim.Adam` ([source](./examples/readme/regular_class.py)):
+`Optimizer` is a regular Python class that can be constructed and serialized to/from a dict or JSON.
 
 ```python
 from msup.base import from_dict, to_dict, to_json, to_kwargs
