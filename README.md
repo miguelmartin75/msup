@@ -164,7 +164,6 @@ Here's some more examples:
 
 # Design Philosophy
 
-- simplicity
 - minimal LOC
 - no dependencies by default; dependencies are opt-in (i.e. Pydantic is optional)
 - opinionated to reduce boilerplate
