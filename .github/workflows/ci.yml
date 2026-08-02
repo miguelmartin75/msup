@@ -27,10 +27,19 @@ jobs:
           enable-cache: true
 
       - name: Sync dev dependencies
-        run: ./just.py setup_dev
+        run: ./run.py setup_dev
+
+      - name: Check types
+        run: ./run.py type_check
+
+      - name: Check linting
+        run: ./run.py lint_check
+
+      - name: Check formatting
+        run: ./run.py format_check
 
       - name: Run tests with coverage
-        run: ./just.py coverage
+        run: ./run.py coverage
 
       - name: Upload coverage Pages artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
