@@ -49,6 +49,7 @@ examples:
     ./examples/readme/train.py --optimizer.lr 0.01
     ./examples/readme/subcommands.py train --name integration
     ./examples/readme/regular_class.py
+    ./examples/remainder.py --cwd build --retries 2 run --target staging --verbose
 
 lint:
     uv run --group dev ruff check .

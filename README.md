@@ -26,7 +26,7 @@ Run the above:
 ./examples/function_args.py echo --name 'bob' --count 2
 ```
 
-or, provide JSON, e.g. `./examples/function_args.py echo --Args '{}'`; `--Args` can point to a filepath too. See [More Examples](#more-examples) below or in the [examples](./examples) folder.
+or, provide JSON, e.g. `./examples/function_args.py echo --Args '{"name": "bob", "count": 2}'`; `--Args` can point to a filepath too. See [More Examples](#more-examples) below or in the [examples](./examples) folder.
 
 ---
 
@@ -105,6 +105,29 @@ print(json_text)
 
 ```bash
 ./examples/readme/regular_class.py
+```
+
+A final positional list captures all remaining tokens, including option-like values ([source](./examples/remainder.py)):
+
+```python
+from typing import Annotated
+
+from msup.cli import CliArg, cli
+
+def forward(
+    command: Annotated[str, CliArg(pos=True)],
+    cwd: str = ".",
+    retries: int = 1,
+    # opt=False makes this final list consume every remaining token.
+    remaining: Annotated[list[str] | None, CliArg(pos=True, opt=False)] = None,
+):
+    print(f"{command=}: {cwd=}: {retries=}: {remaining=}")
+
+cli(forward)
+```
+
+```bash
+./examples/remainder.py --cwd build --retries 2 run --target staging --verbose
 ```
 
 Here's some more examples:
