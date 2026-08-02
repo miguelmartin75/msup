@@ -43,6 +43,8 @@ examples:
     ./examples/pt_basic.py test_optim_advanced_alt --model.dim 4 --model.n_layers 1
     ./examples/pydantic_basic.py --help
     ./examples/pydantic_basic.py --name integration --values 1 2
+    ./examples/function_args.py --help
+    ./examples/function_args.py --name integration --count 2
 
 lint:
     uv run --group dev ruff check .
