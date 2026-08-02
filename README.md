@@ -10,6 +10,10 @@ def greet(name: str, count: int = 1):
 cli(greet)
 ```
 
+```bash
+./examples/function_args.py --name 'hello world' --count 2
+```
+
 With no required dependencies and only 921 LOC (`wc -l msup/*.py`), this library lets you:
 
 - create CLIs from typed functions and nested dataclass or Pydantic v2 definitions
@@ -51,7 +55,7 @@ uv pip install msup
 
 # More Examples
 
-Nested dataclasses produce nested options:
+Nested dataclasses produce nested options ([source](./examples/readme/train.py)):
 
 ```python
 from dataclasses import dataclass, field
@@ -71,7 +75,11 @@ def train(args: Train):
 cli(train)
 ```
 
-A mapping of functions creates subcommands:
+```bash
+./examples/readme/train.py --optimizer.lr 0.01
+```
+
+A mapping of functions creates subcommands ([source](./examples/readme/subcommands.py)):
 
 ```python
 from msup.cli import cli
@@ -85,7 +93,11 @@ def evaluate(name: str):
 cli({train: "train a model", evaluate: "evaluate a model"})
 ```
 
-`Optimizer` is a regular class that can be built from a dictionary and serialized to a dictionary or JSON. CLI commands require typed functions, dataclasses, or Pydantic v2 models. `to_kwargs` prepares matching settings for `torch.optim.Adam`:
+```bash
+./examples/readme/subcommands.py train --name integration
+```
+
+`Optimizer` is a regular class that can be built from a dictionary and serialized to a dictionary or JSON. CLI commands require typed functions, dataclasses, or Pydantic v2 models. `to_kwargs` prepares matching settings for `torch.optim.Adam` ([source](./examples/readme/regular_class.py)):
 
 ```python
 from msup.base import from_dict, to_dict, to_json, to_kwargs
@@ -99,13 +111,17 @@ optimizer = from_dict(Optimizer, {"lr": 0.1})
 payload = to_dict(optimizer)
 json_text = to_json(optimizer)
 kwargs = to_kwargs(Optimizer, optimizer)  # to construct a copy via `Optimizer(**kwargs)`
+print(json_text)
 ```
 
-See:
+```bash
+./examples/readme/regular_class.py
+```
+
+Here's some more examples:
 - Direct function arguments: [examples/function_args.py](./examples/function_args.py)
 - Nested dataclass command: [examples/nested.py](./examples/nested.py)
 - Multiple CLI commands: [examples/multicli.py](./examples/multicli.py)
 - Simple CLI: [examples/simple.py](./examples/simple.py)
 - Pydantic v2 CLI: [examples/pydantic_basic.py](./examples/pydantic_basic.py)
 - Regular-class and PyTorch construction: [examples/pt_basic.py](./examples/pt_basic.py)
-- Contributor backlog: [dev/TODO.md](./dev/TODO.md)

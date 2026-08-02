@@ -257,11 +257,21 @@ Phase 1: shared callable field discovery
 3. Update the opening capability statement to include regular Python classes
    accurately.
 4. Tighten all displayed examples so they do not use consecutive blank lines.
+5. Put every displayed README example in `examples/`, reusing a matching
+   existing script where practical and adding concise scripts under
+   `examples/readme/` where an existing example is too broad.
+6. Show each displayed example's root-relative execution command. The nested
+   dataclass command must be
+   `./examples/readme/train.py --optimizer.lr 0.01`.
+7. Extend `just examples` to run each new `examples/readme/` script with the
+   documented command.
 
 ### Code pointers
 
 - `examples/nested.py` is the nested-dataclass command.
 - `examples/multicli.py` is the advanced multi-command example.
+- `examples/readme/` contains concise, executable counterparts for README
+  snippets that do not match the broader integration examples.
 - `justfile:examples` is the executable-example integration recipe.
 - `README.md` is the primary top-down onboarding document.
 - `dev/TODO.md` is the destination for the contributor backlog.
@@ -294,13 +304,19 @@ Phase 1: shared callable field discovery
   behavior.
 - The opening capability statement includes regular Python classes accurately.
 - Displayed code examples have no consecutive blank lines.
+- Every displayed README example maps to an executable source file and a
+  root-relative command.
+- The nested-dataclass example shows its actual
+  `./examples/readme/train.py --optimizer.lr` invocation.
 
 ### Implementation notes
 
 - The executable example, recipe coverage, and TODO migration are complete.
   Follow-up F4-002 restored the requested heading structure. Follow-up F4-003
   added compact code snippets and a complete, implementation-checked feature
-  inventory.
+  inventory. It now reuses `examples/function_args.py` and adds focused
+  `examples/readme/` scripts for the other displayed snippets, with every
+  matching command covered by `just examples`.
 
 ## Phase 5: Reduce direct CLI setup LOC (Follow-up F4-001)
 
