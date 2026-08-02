@@ -1,5 +1,8 @@
 # **M**icro **S**erialization **U**tilities for **P**ython
 
+> [!TIP]
+> msup can be a [just](https://github.com/casey/just) replacement. See [just.py](./just.py) for an executable task runner.
+
 ```python
 from typing import Annotated
 from msup.base import to_json
@@ -30,7 +33,7 @@ or, provide JSON, e.g. `./examples/function_args.py echo --Args '{"name": "bob",
 
 ---
 
-With no required dependencies and only 921 LOC (`wc -l msup/*.py`), this library lets you:
+With no required dependencies and only 918 LOC (`wc -l msup/*.py`), this library lets you:
 
 - create CLIs from typed functions and nested dataclass or Pydantic v2 definitions
 - construct regular Python classes from their `__init__` parameters and serialize or deserialize regular classes, dataclasses, and Pydantic v2 models as JSON and Python dictionaries
