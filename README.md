@@ -72,13 +72,11 @@ cli(train)
 ./examples/readme/train.py --optimizer.lr 0.01
 ```
 
-A Pydantic v2 model provides typed CLI options ([source](./examples/pydantic_basic.py)):
+Pydantic can also be used for `cli` ([source](./examples/pydantic_basic.py)):
 
 ```python
 from typing import Annotated
-
 from pydantic import BaseModel, Field
-
 from msup.cli import CliArg, cli
 
 class Args(BaseModel):
@@ -92,10 +90,10 @@ cli(greet)
 ```
 
 ```bash
-./examples/pydantic_basic.py --name integration --values 1 2
+./examples/pydantic_basic.py --name 'wow pydantic' --values 1 2
 ```
 
-`Optimizer` is a regular Python class that can be constructed and serialized to/from a dict or JSON.
+Python classes can also drive a CLI, and be constructed and serialized to/from a dict or JSON.
 
 ```python
 from msup.base import from_dict, to_dict, to_json, to_kwargs
