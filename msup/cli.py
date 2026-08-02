@@ -3,8 +3,8 @@ import inspect
 import os
 import sys
 from collections.abc import Callable as Callable2
-from dataclasses import MISSING, dataclass, field, is_dataclass
-from typing import Annotated, Any, Callable, cast, get_args, get_origin
+from dataclasses import MISSING, dataclass, is_dataclass
+from typing import Any, Callable, cast, get_args, get_origin
 
 from msup.base import (
     FieldSpec,
@@ -15,7 +15,6 @@ from msup.base import (
     has_default_value,
     is_optional,
     is_structured_model,
-    to_json,
 )
 
 
@@ -55,7 +54,7 @@ def error_exit(msg: str, code: int = 1):
     sys.exit(code)
 
 
-def argument_type(annotation: type, field_name: str) -> type:
+def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], Any]:
     annotation = effective_type(annotation, field_name)
     origin = get_origin(annotation) or annotation
     if annotation is Any or is_structured_model(annotation) or origin in (dict, Callable2):
@@ -326,15 +325,12 @@ def _from_cli_args(clazz: type, args, config: dict | None = None, prefix: str = 
             construct_args[f.name] = _from_cli_args(field_type, args, nested_config, name)
         else:
             value = config_value
-            concrete_type = type(value) if value is not MISSING else None
             if env_value is not None:
                 value = env_value
-                concrete_type = str
             if cli_value is not MISSING:
                 value = cli_value
-                concrete_type = type(value)
             if value is not MISSING:
-                construct_args[f.name] = from_dict_value(value, annotation, concrete_type, name)
+                construct_args[f.name] = from_dict_value(value, annotation, type(value), name)
             elif is_dataclass(clazz) and not has_default_value(f) and not is_optional(annotation):
                 error_exit(f"--{name} not provided (default value DNE)", 3)
     return clazz(**construct_args)
@@ -348,20 +344,16 @@ def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | Non
         annotation = command_arg.annotation
         cli_arg = cliarg_from_annotations(command_arg.annotations)
         value = config.get(name, MISSING)
-        concrete_type = type(value) if value is not MISSING else None
         env_value = os.getenv(cli_arg.env) if cli_arg and cli_arg.env else None
         if env_value is not None:
             value = env_value
-            concrete_type = str
         if hasattr(args, name):
             value = getattr(args, name)
-            concrete_type = type(value)
         elif hasattr(args, f"{name}_pos"):
             value = getattr(args, f"{name}_pos")
-            concrete_type = type(value)
 
         if value is not MISSING:
-            result[name] = from_dict_value(value, annotation, concrete_type, name)
+            result[name] = from_dict_value(value, annotation, type(value), name)
         elif command_arg.default is MISSING:
             error_exit(f"--{name} not provided (default value DNE)", 3)
     return result
