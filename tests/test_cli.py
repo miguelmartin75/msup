@@ -7,7 +7,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import FrozenInstanceError, dataclass, field
 from enum import Enum
 from io import StringIO
-from typing import Annotated, Any, Callable, Optional
+from typing import Annotated, Any, Callable, Optional, cast
 
 from msup.cli import CliArg, _from_cli_args, argument_type, cli, strtobool
 
@@ -394,7 +394,9 @@ class CliContractTests(unittest.TestCase):
     def test_direct_primitives_convert_true_and_false(self):
         for value, expected in [("true", True), ("false", False)]:
             with self.subTest(value=value):
-                result = self.invoke(primitive_command, ["--count", "4", "--ratio", "2.5", "--name", "updated", "--enabled", value])
+                result = self.invoke(
+                    primitive_command, ["--count", "4", "--ratio", "2.5", "--name", "updated", "--enabled", value]
+                )
                 self.assertEqual(result, PrimitiveArgs(count=4, ratio=2.5, name="updated", enabled=expected))
 
     def test_argument_type_is_public_and_uses_strtobool(self):
@@ -409,7 +411,7 @@ class CliContractTests(unittest.TestCase):
 
         cli_arg = CliArg(short="v")
         with self.assertRaises(FrozenInstanceError):
-            cli_arg.short = "x"
+            cast(Any, cli_arg).short = "x"
 
     def test_unrelated_annotated_metadata_is_ignored(self):
         self.assertEqual(
@@ -426,11 +428,16 @@ class CliContractTests(unittest.TestCase):
         self.assertIn("not-a-boolean", output.getvalue())
 
     def test_collections_convert_elements_and_accept_multiple_values(self):
-        result = self.invoke(collection_command, ["--numbers", "1", "2", "--labels", "one", "two", "--coordinates", "3", "4"])
+        result = self.invoke(
+            collection_command, ["--numbers", "1", "2", "--labels", "one", "two", "--coordinates", "3", "4"]
+        )
         self.assertEqual(result, CollectionArgs(numbers=[1, 2], labels=["one", "two"], coordinates=(3, 4)))
 
     def test_structured_values_parse_from_json_and_callable_paths(self):
-        result = self.invoke(structured_command, ["--values", '{"one": 1}', "--child", '{"count": 4}', "--transform", f"{__name__}.callback"])
+        result = self.invoke(
+            structured_command,
+            ["--values", '{"one": 1}', "--child", '{"count": 4}', "--transform", f"{__name__}.callback"],
+        )
         self.assertEqual(result.values, {"one": 1})
         self.assertEqual(result.child, ChildArgs(count=4))
         self.assertIs(result.transform, callback)
@@ -452,7 +459,9 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 2)
 
     def test_positional_remainder_captures_all_arguments(self):
-        self.assertEqual(self.invoke(remainder_command, ["one", "two", "three"]), RemainderArgs(extra=["one", "two", "three"]))
+        self.assertEqual(
+            self.invoke(remainder_command, ["one", "two", "three"]), RemainderArgs(extra=["one", "two", "three"])
+        )
         self.assertEqual(self.invoke(remainder_command, ["--a", "test"]), RemainderArgs(extra=["--a", "test"]))
         self.assertEqual(
             self.invoke(prefix_remainder_command, ["first", "--a", "test"]),
@@ -473,17 +482,28 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 2)
 
     def test_required_values_can_come_from_configuration_and_are_enforced(self):
-        self.assertEqual(self.invoke(required_command, ['--Args', '{"name": "cfg-name"}']), RequiredArgs(name="cfg-name"))
+        self.assertEqual(
+            self.invoke(required_command, ["--Args", '{"name": "cfg-name"}']), RequiredArgs(name="cfg-name")
+        )
         with self.assertRaises(SystemExit) as error:
             self.invoke(required_command, [])
         self.assertEqual(error.exception.code, 3)
 
     def test_configuration_environment_and_cli_follow_source_precedence(self):
         config = '{"selected": 3, "from_config": 4}'
-        self.assertEqual(self.invoke(source_command, ["--Args", config]), SourceArgs(selected=3, from_config=4, default_only="default"))
+        self.assertEqual(
+            self.invoke(source_command, ["--Args", config]),
+            SourceArgs(selected=3, from_config=4, default_only="default"),
+        )
         os.environ["MSUP_TEST_SELECTED"] = "7"
-        self.assertEqual(self.invoke(source_command, ["--Args", config]), SourceArgs(selected=7, from_config=4, default_only="default"))
-        self.assertEqual(self.invoke(source_command, ["--Args", config, "--selected", "9"]), SourceArgs(selected=9, from_config=4, default_only="default"))
+        self.assertEqual(
+            self.invoke(source_command, ["--Args", config]),
+            SourceArgs(selected=7, from_config=4, default_only="default"),
+        )
+        self.assertEqual(
+            self.invoke(source_command, ["--Args", config, "--selected", "9"]),
+            SourceArgs(selected=9, from_config=4, default_only="default"),
+        )
 
     def test_configuration_booleans_are_converted(self):
         cases = [
@@ -590,17 +610,20 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(result["child"], ChildArgs(count=6))
 
         defaults = self.invoke(direct_command, ["--Args", '{"count": 5}'])
-        self.assertEqual(defaults, {
-            "count": 5,
-            "ratio": 1.5,
-            "name": "default",
-            "enabled": False,
-            "optional": None,
-            "values": None,
-            "transform": callback,
-            "mapping": None,
-            "child": None,
-        })
+        self.assertEqual(
+            defaults,
+            {
+                "count": 5,
+                "ratio": 1.5,
+                "name": "default",
+                "enabled": False,
+                "optional": None,
+                "values": None,
+                "transform": callback,
+                "mapping": None,
+                "child": None,
+            },
+        )
 
     def test_direct_parameters_exclude_reserved_self_and_cls_names(self):
         sys.argv = ["program", "--help"]
