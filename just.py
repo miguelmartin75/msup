@@ -132,6 +132,7 @@ def publish_release() -> None:
             "-m",
             "twine",
             "upload",
+            "--verbose",
             *[str(path) for path in dist.glob("*.tar.gz")],
             *[str(path) for path in dist.glob("*.whl")],
         ]

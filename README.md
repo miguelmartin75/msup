@@ -6,29 +6,33 @@
 > msup can be used as a [just](https://github.com/casey/just) replacement. See [just.py](./just.py).
 
 ```python
-from typing import Annotated
+from typing import Annotated, Callable
 from msup.base import to_json
 from msup.cli import cli, CliArg
 
-# NOTE: help shows up when `--help` is provided
-def show(name: Annotated[str, CliArg(short="n", help="your name")], count: int = 1):
+def sir(name: str) -> str:
+    return f"Sir {name}"
+
+def miss(name: str) -> str:
+    return f"Miss {name}"
+
+def show(name: Annotated[str, CliArg(short="n", help="your name")], count: int = 1, name_fn: Callable[[str], str] = miss):
     print(to_json(locals(), type_class=show))  # encode the function args to JSON
 
-def echo(name: Annotated[str, CliArg(short="n", help="your name")], count: int = 1):
-    print([name] * count)
+def echo(name: Annotated[str, CliArg(short="n", help="your name")], count: int = 1, name_fn: Callable[[str], str] = sir):
+    print([name_fn(name)] * count)
 
-# creates a CLI interface with commands 'show' and 'echo'
-cli({
-    show: "show the input arguments as JSON", 
-    echo: "echo your name N times", 
-})
-# or for a single command CLI
-# cli(show)
+if __name__ == "__main__":
+    # creates a CLI interface with sub-commands 'show' and 'echo'
+    cli({
+        show: "show the input arguments as JSON", 
+        echo: "echo your name N times", 
+    })
 ```
 
 Run the above:
 ```bash
-./examples/function_args.py echo --name 'bob' --count 2
+./examples/function_args.py echo --name 'Bob' --count 2 --name_fn examples.function_args.sir
 ```
 
 or, provide JSON, e.g. `./examples/function_args.py echo --Args '{"name": "bob", "count": 2}'`; `--Args` can point to a filepath too. See [More Examples](#more-examples) below or in the [examples](./examples) folder.
