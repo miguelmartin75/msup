@@ -20,6 +20,7 @@ from tempfile import TemporaryDirectory
 from typing import Annotated
 
 from msup.cli import CliArg, cli
+from scripts.generate_coverage_badge import generate_badge
 
 
 repo_root = Path(__file__).parent
@@ -44,7 +45,16 @@ def test() -> None:
 
 
 def coverage() -> None:
-    run("uv run --group dev --extra pydantic pytest --cov=msup --cov-report=term-missing")
+    run(
+        "uv run --group dev --extra pydantic pytest --cov=msup "
+        "--cov-report=term-missing "
+        "--cov-report=json:coverage-artifacts/coverage.json "
+        "--cov-report=html:coverage-artifacts/site/coverage"
+    )
+    generate_badge(
+        repo_root / "coverage-artifacts/coverage.json",
+        repo_root / "coverage-artifacts/site/coverage.svg",
+    )
 
 
 def examples() -> None:
