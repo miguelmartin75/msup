@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Callable as Callable2, Mapping
 from dataclasses import MISSING, dataclass, fields, is_dataclass
+from enum import Enum
 from types import UnionType
 from typing import Annotated, Any, Callable, TypeVar, Union, get_args, get_origin, get_type_hints
 
@@ -251,6 +252,21 @@ def union_member(annotation: Any, concrete_type: type, field_name: str = "value"
     return result
 
 
+def enum_type(annotation: Any) -> type[Enum] | None:
+    origin = annotation_origin(annotation)
+    if inspect.isclass(origin) and issubclass(origin, Enum):
+        result = origin
+    else:
+        result = None
+    return result
+
+
+def validate_enum_values(enum_type: type[Enum], field_name: str) -> None:
+    supported_types = (str, int, float, bool)
+    if any(type(member.value) not in supported_types for member in enum_type):
+        raise TypeError(f"{field_name}: {enum_type.__name__} values must be str, int, float, or bool")
+
+
 def is_compat(field_type: Any, concrete_type: type) -> tuple[bool, Any | None]:
     optional_type = get_optional_type(field_type)
     if concrete_type is type(None):
@@ -268,6 +284,12 @@ def is_compat(field_type: Any, concrete_type: type) -> tuple[bool, Any | None]:
             return True, result
         elif field_type is Any:
             return True, Any
+        elif (enum_class := enum_type(field_type)) is not None:
+            validate_enum_values(enum_class, "value")
+            result = concrete_origin is enum_class or any(
+                type(member.value) is concrete_origin for member in enum_class
+            )
+            return result, enum_class if result else None
         elif is_structured_model(field_type):
             result = concrete_origin in (field_type, dict, str)
             return result, field_type if result else None
@@ -314,7 +336,20 @@ def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: st
             member = union_member(field_type, concrete_type, field_name)
             result = from_dict_value(x, member, concrete_type, field_name)
         else:
-            if origin is Callable2:
+            enum_class = enum_type(field_type)
+            if enum_class is not None:
+                validate_enum_values(enum_class, field_name)
+                if isinstance(x, enum_class):
+                    result = x
+                else:
+                    try:
+                        result = enum_class(x)
+                    except ValueError as error:
+                        values = [member.value for member in enum_class]
+                        raise TypeError(
+                            f"{field_name}: invalid {enum_class.__name__} value {x!r}; expected one of {values}"
+                        ) from error
+            elif origin is Callable2:
                 if isinstance(x, str):
                     result = load_callable(x)
                     if not callable(result):
@@ -327,7 +362,9 @@ def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: st
                 compatible, _ = is_compat(field_type, concrete_type)
                 if not compatible:
                     raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
-            if field_type is Any:
+            if enum_class is not None or origin is Callable2:
+                pass
+            elif field_type is Any:
                 result = x
             elif is_structured_model(field_type):
                 if concrete_type is field_type:
@@ -396,6 +433,11 @@ def to_dict_value(x: Any, field_type: Any) -> Any:
         return to_dict_value(x, member)
     elif field_type is Any:
         return x
+    elif (enum_class := enum_type(field_type)) is not None:
+        validate_enum_values(enum_class, "value")
+        if not isinstance(x, enum_class):
+            raise TypeError(f"expected {enum_class.__name__} value, got {type(x)}")
+        return x.value
     elif is_structured_model(x):
         return to_dict(x)
     elif origin is dict:
@@ -418,20 +460,16 @@ def to_dict_value(x: Any, field_type: Any) -> Any:
 
 
 def to_dict(x: Any, type_class: type | Callable[..., Any] | None = None) -> dict[str, Any]:
-    if type_class is None and is_pydantic_model(x):
-        pydantic_model: Any = x
-        result = pydantic_model.model_dump()
-    else:
-        result: dict[str, Any] = {}
-        field_source = type(x) if type_class is None else type_class
-        for f in fields_or_init_kwargs(field_source):
-            if isinstance(x, Mapping) and f.name in x:
-                mapping: Mapping[Any, Any] = x
-                value = mapping[f.name]
-                result[f.name] = to_dict_value(value, f.annotation or type(value))
-            elif not isinstance(x, Mapping) and hasattr(x, f.name):
-                value = getattr(x, f.name)
-                result[f.name] = to_dict_value(value, f.annotation or type(value))
+    result: dict[str, Any] = {}
+    field_source = type(x) if type_class is None else type_class
+    for f in fields_or_init_kwargs(field_source):
+        if isinstance(x, Mapping) and f.name in x:
+            mapping: Mapping[Any, Any] = x
+            value = mapping[f.name]
+            result[f.name] = to_dict_value(value, f.annotation or type(value))
+        elif not isinstance(x, Mapping) and hasattr(x, f.name):
+            value = getattr(x, f.name)
+            result[f.name] = to_dict_value(value, f.annotation or type(value))
     return result
 
 

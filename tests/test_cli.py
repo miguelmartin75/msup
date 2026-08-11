@@ -748,13 +748,18 @@ class CliContractTests(unittest.TestCase):
         cases = [
             (unsupported_union_command, r"value.*int.*str"),
             (fixed_tuple_command, r"coordinates.*tuple.*int.*str"),
-            (enum_command, r"choice.*unsupported CLI annotation.*Choice"),
         ]
         for command, message in cases:
             with self.subTest(command=command.__name__):
                 sys.argv = ["program"]
                 with self.assertRaisesRegex(TypeError, message):
                     cli(command)
+
+    def test_enum_arguments_accept_member_values_and_reject_invalid_values(self):
+        self.assertEqual(self.invoke(enum_command, ["--choice", "first"]), EnumArgs(Choice.FIRST))
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as error:
+            self.invoke(enum_command, ["--choice", "missing"])
+        self.assertEqual(error.exception.code, 2)
 
     def test_subcommand_uses_the_selected_command_parser(self):
         sys.argv = ["program", "subcommand", "--value", "4"]

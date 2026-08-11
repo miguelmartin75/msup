@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from contextlib import redirect_stdout
+from enum import Enum
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -34,6 +35,15 @@ class LegacyPydanticValues(PydanticV1BaseModel):
 
 class NativePydanticValues(BaseModel):
     value: int = Field(alias="externalValue")
+
+
+class PydanticState(Enum):
+    READY = "ready"
+    STOPPED = "stopped"
+
+
+class PydanticEnumValues(BaseModel):
+    state: PydanticState
 
 
 class CliChild(BaseModel):
@@ -92,6 +102,11 @@ class PydanticSerializationTests(unittest.TestCase):
         value = from_dict(NativePydanticValues, {"externalValue": "3"})
         self.assertEqual(value, NativePydanticValues(externalValue=3))
         self.assertEqual(to_dict(value), {"value": 3})
+
+    def test_enum_values_use_the_shared_serialization_path(self):
+        value = PydanticEnumValues(state=PydanticState.READY)
+        self.assertEqual(to_dict(value), {"state": "ready"})
+        self.assertEqual(from_json(PydanticEnumValues, s=to_json(value, indent=None)), value)
 
     def test_public_helpers_round_trip_scalar_collections_and_nested_models(self):
         value = from_dict(

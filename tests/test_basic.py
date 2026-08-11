@@ -1,6 +1,7 @@
 import json
 import unittest
 from dataclasses import MISSING, dataclass, field as dataclass_field
+from enum import Enum, IntEnum
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -51,6 +52,34 @@ class Defaults:
 @dataclass
 class CallableValue:
     callback: Annotated[Callable[[int], int], CliArg()]
+
+
+class State(Enum):
+    READY = "ready"
+    STOPPED = "stopped"
+
+
+class Priority(IntEnum):
+    LOW = 1
+    HIGH = 2
+
+
+class InvalidState(Enum):
+    PAIR = ("not", "a scalar")
+
+
+@dataclass
+class EnumChild:
+    state: State
+
+
+@dataclass
+class EnumValues:
+    state: State
+    priority: Priority
+    optional: State | None
+    states: list[State]
+    child: EnumChild
 
 
 class BasicClass:
@@ -173,6 +202,33 @@ class BasicTests(unittest.TestCase):
         self.assertIs(from_dict(CallableValue, {"callback": increment}).callback, increment)
         with self.assertRaisesRegex(TypeError, "expected callable value"):
             to_dict(CallableValue(cast(Callable[[int], int], 3)))
+
+    def test_enum_values_round_trip_through_base_and_json_conversion(self):
+        expected = EnumValues(
+            state=State.READY,
+            priority=Priority.HIGH,
+            optional=State.READY,
+            states=[State.STOPPED, State.READY],
+            child=EnumChild(state=State.STOPPED),
+        )
+        serialized = {
+            "state": "ready",
+            "priority": 2,
+            "optional": "ready",
+            "states": ["stopped", "ready"],
+            "child": {"state": "stopped"},
+        }
+        self.assertEqual(from_dict(EnumValues, serialized), expected)
+        self.assertEqual(to_dict(expected), serialized)
+        self.assertEqual(from_json(EnumValues, s=to_json(expected, indent=None)), expected)
+        with self.assertRaisesRegex(TypeError, "state.*invalid State value"):
+            from_dict(EnumValues, {**serialized, "state": "unknown"})
+        with self.assertRaisesRegex(TypeError, "invalid State value"):
+            from_dict(EnumValues, {**serialized, "child": {"state": "unknown"}})
+        with self.assertRaisesRegex(TypeError, "invalid.*must be str, int, float, or bool"):
+            from_dict_value("not", InvalidState, str, "invalid")
+        with self.assertRaisesRegex(TypeError, "value.*must be str, int, float, or bool"):
+            is_compat(InvalidState, str)
 
     def test_ambiguous_unions_and_invalid_dict_strings_are_rejected(self):
         @dataclass

@@ -152,6 +152,7 @@ Here's some more examples:
     - Other types: `Any`, optionals, and unambiguous unions. Non-optional unions are conversion-only, not CLI annotations.
     - Collections: lists, dictionaries, and tuples convert recursively. The CLI supports lists and variable-length tuples; fixed-length tuples are conversion-only.
     - Importable callables use `module.name` strings for loading and serialization.
+    - Enum values serialize as declared member values and deserialize through the declared Enum type.
     - `from_dict`, `to_dict`, `from_json`, and `to_json` convert typed values. `to_kwargs` prepares matching constructor settings, for example for `torch.optim.Adam`.
     - `to_json(locals(), type_class=handler)` serializes only the handler's declared arguments, using its annotations.
 - CLI commands

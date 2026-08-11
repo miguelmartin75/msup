@@ -8,6 +8,7 @@ from typing import Any, Callable, cast, get_args, get_origin
 
 from msup.base import (
     FieldSpec,
+    enum_type,
     effective_type,
     fields_or_init_kwargs,
     from_dict_value,
@@ -54,6 +55,26 @@ def error_exit(msg: str, code: int = 1):
     sys.exit(code)
 
 
+def enum_argument_type(annotation: Any, field_name: str) -> Callable[[str], Any]:
+    enum_class = enum_type(annotation)
+    assert enum_class is not None
+    values_by_text: dict[str, Any] = {}
+    for member in enum_class:
+        text = str(member.value)
+        if text in values_by_text:
+            raise TypeError(f"{field_name}: {enum_class.__name__} has ambiguous CLI value {text!r}")
+        values_by_text[text] = member.value
+
+    def convert(value: str) -> Any:
+        if value not in values_by_text:
+            raise argparse.ArgumentTypeError(
+                f"{field_name}: invalid {enum_class.__name__} value {value!r}; expected one of {list(values_by_text)}"
+            )
+        return from_dict_value(values_by_text[value], enum_class, type(values_by_text[value]), field_name)
+
+    return convert
+
+
 def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], Any]:
     annotation = effective_type(annotation, field_name)
     origin = get_origin(annotation) or annotation
@@ -72,6 +93,8 @@ def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], An
         result = annotation
     elif annotation is bool:
         result = strtobool
+    elif enum_type(annotation) is not None:
+        result = enum_argument_type(annotation, field_name)
     else:
         raise TypeError(f"{field_name}: unsupported CLI annotation: {annotation}")
     return result
@@ -93,6 +116,9 @@ def _add_argument(parser, args, kwargs, annotation, field_name, help_text, posit
             kwargs["const"] = True
         kwargs["type"] = strtobool
         kwargs["metavar"] = "{0|1,true|false,yes|no}"
+    elif (enum_class := enum_type(field_type)) is not None:
+        kwargs["type"] = enum_argument_type(field_type, field_name)
+        kwargs["metavar"] = "{" + ",".join(str(member.value) for member in enum_class) + "}"
     else:
         kwargs["type"] = argument_type(field_type, field_name)
     parser.add_argument(*args, **kwargs)
