@@ -15,7 +15,7 @@ documentation, examples, and runner changes do not count.
 ## Status
 
 - Phase 1: Complete
-- Phase 2: Not started
+- Phase 2: Complete
 - Phase 3: Not started
 - Phase 4: Not started
 - Phase 5: Not started
@@ -556,7 +556,12 @@ Run focused base and metadata tests, `./run.py type_check`, and
 
 ## Phase 2: Add symmetric non-invoking base conversion
 
-**Status:** Not started
+**Status:** Complete
+
+**Validation result:** 82 tests passed; `./run.py check` passed;
+`git diff --check` passed; correctness and code-guideline reviews approved
+the phase. Production Python is 1,153 lines, within the user-approved 10%
+margin of the 1,110-line target (effective ceiling 1,221).
 
 ### Implementation
 

@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import dataclass, field
 from enum import Enum
 from io import StringIO
 from pathlib import Path
@@ -76,6 +77,20 @@ class FactoryChildValues(BaseModel):
 
 class RequiredChildValues(BaseModel):
     child: CliChild
+
+
+selected_pydantic_target_calls = 0
+
+
+def selected_pydantic_target(child: Child, label: str = "default") -> None:
+    global selected_pydantic_target_calls
+    selected_pydantic_target_calls += 1
+
+
+@dataclass
+class SelectedPydanticTargetOwner:
+    target: Callable[..., Any] = selected_pydantic_target
+    kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")] = field(default_factory=dict)
 
 
 pydantic_received = []
@@ -227,6 +242,27 @@ class PydanticSerializationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, "RelationOwner.kwargs.*kwargs_for is only supported"):
             fields_or_init_kwargs(RelationOwner)
+
+    def test_pydantic_selected_target_parameters_round_trip_without_invocation(self):
+        global selected_pydantic_target_calls
+        selected_pydantic_target_calls = 0
+        value = from_dict(
+            SelectedPydanticTargetOwner,
+            {
+                "target": f"{__name__}.selected_pydantic_target",
+                "kwargs": {"child": {"name": "nested", "count": "3"}},
+            },
+        )
+        self.assertEqual(value.kwargs, {"child": Child(name="nested", count=3)})
+        self.assertEqual(
+            to_dict(value),
+            {
+                "target": f"{__name__}.selected_pydantic_target",
+                "kwargs": {"child": {"name": "nested", "count": 3}},
+            },
+        )
+        self.assertEqual(from_json(SelectedPydanticTargetOwner, s=to_json(value, indent=None)), value)
+        self.assertEqual(selected_pydantic_target_calls, 0)
 
 
 class PydanticCliTests(unittest.TestCase):

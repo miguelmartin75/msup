@@ -18,8 +18,11 @@ from msup.base import (
     from_dict,
     from_dict_value,
     from_json,
+    from_kwargs,
     is_compat,
+    kwargs_from_dict,
     load_callable,
+    metadata_from_annotations,
     selected_target_fields,
     to_dict,
     to_dict_value,
@@ -146,6 +149,37 @@ def relation_target(value: int, *, label: str = "default") -> None:
     pass
 
 
+relation_target_calls = 0
+relation_class_calls = 0
+relation_factory_calls = {"target": 0, "kwargs": 0}
+declared_kwargs_copy_calls = 0
+
+
+def counted_relation_target(value: int, state: State = State.READY, values: list[int] | None = None) -> None:
+    global relation_target_calls
+    relation_target_calls += 1
+
+
+def default_relation_target(value: int = 2, *, label: str = "default") -> None:
+    pass
+
+
+class CountedRelationClass:
+    def __init__(self, value: int, nested: Nested, states: list[State]) -> None:
+        global relation_class_calls
+        relation_class_calls += 1
+
+
+def relation_target_factory() -> Callable[..., Any]:
+    relation_factory_calls["target"] += 1
+    return default_relation_target
+
+
+def relation_kwargs_factory() -> dict[str, Any]:
+    relation_factory_calls["kwargs"] += 1
+    return {"label": "factory"}
+
+
 def identity_mismatch(value: int) -> int:
     return value
 
@@ -161,6 +195,92 @@ def direct_relation_values(
     kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")],
 ) -> None:
     pass
+
+
+@dataclass
+class NestedRelationValues:
+    target: Callable[..., Any] = dataclass_field(default_factory=relation_target_factory)
+    kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")] = dataclass_field(default_factory=relation_kwargs_factory)
+
+
+@dataclass
+class NestedRelationOwner:
+    nested: NestedRelationValues
+
+
+@dataclass
+class StrictNestedRelationValues:
+    target: Callable[..., Any] = relation_target
+    kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")] = dataclass_field(default_factory=dict)
+
+
+@dataclass
+class StrictNestedRelationOwner:
+    nested: StrictNestedRelationValues
+
+
+@dataclass
+class SelectedRelationConfig:
+    target: Callable[..., Any] = relation_target
+    kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")] = dataclass_field(default_factory=dict)
+
+
+def selected_relation_config_target(config: SelectedRelationConfig | None = None) -> None:
+    pass
+
+
+@dataclass
+class StructuredTargetRelationOwner:
+    target: Callable[..., Any] = selected_relation_config_target
+    kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")] = dataclass_field(default_factory=dict)
+
+
+def selected_union_relation_config_target(config: SelectedRelationConfig | int) -> None:
+    pass
+
+
+@dataclass
+class UnionStructuredTargetRelationOwner:
+    target: Callable[..., Any] = selected_union_relation_config_target
+    kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")] = dataclass_field(default_factory=dict)
+
+
+@dataclass
+class MultipleRelationValues:
+    first_target: Callable[..., Any] = relation_target
+    first_kwargs: Annotated[Kwargs, Metadata(kwargs_for="first_target")] = dataclass_field(
+        default_factory=relation_kwargs_factory
+    )
+    second_target: Callable[..., Any] = relation_target
+    second_kwargs: Annotated[Kwargs, Metadata(kwargs_for="second_target")] = dataclass_field(
+        default_factory=relation_kwargs_factory
+    )
+
+
+@dataclass
+class FactoryRelationValues:
+    target: Callable[..., Any] = dataclass_field(default_factory=relation_target_factory)
+    kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")] = dataclass_field(default_factory=relation_kwargs_factory)
+
+
+class HashableKwargs(dict[str, Any]):
+    __hash__ = object.__hash__
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "HashableKwargs":
+        global declared_kwargs_copy_calls
+        declared_kwargs_copy_calls += 1
+        result = HashableKwargs(self)
+        memo[id(self)] = result
+        return result
+
+
+declared_kwargs = HashableKwargs({"label": "declared"})
+
+
+@dataclass
+class DeclaredDefaultRelationValues:
+    target: Callable[..., Any] = relation_target
+    kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")] = declared_kwargs
 
 
 class MethodFieldValues:
@@ -223,9 +343,151 @@ class BasicTests(unittest.TestCase):
         self.assertEqual(dataclass_fields[1].annotation.__value__, dict[str, Any])
         value = from_dict(RelationValues, {"target": relation_target, "kwargs": {"value": "3"}})
         self.assertIs(value.target, relation_target)
-        self.assertEqual(value.kwargs, {"value": "3"})
+        self.assertEqual(value.kwargs, {"value": 3})
+
+    def test_kwargs_relations_convert_serialize_and_never_invoke_targets(self):
+        global declared_kwargs_copy_calls, relation_target_calls, relation_class_calls
+        relation_target_calls = relation_class_calls = 0
+        relation_factory_calls.update(target=0, kwargs=0)
+        value = from_dict(
+            RelationValues,
+            {"target": counted_relation_target, "kwargs": {"value": "3", "state": "stopped", "values": ["1", 2]}},
+        )
+        self.assertEqual(value.kwargs, {"value": 3, "state": State.STOPPED, "values": [1, 2]})
+        self.assertEqual(
+            to_dict(value),
+            {
+                "target": f"{__name__}.counted_relation_target",
+                "kwargs": {"value": 3, "state": "stopped", "values": [1, 2]},
+            },
+        )
+        self.assertEqual(from_json(RelationValues, s=to_json(value, indent=None)), value)
+        self.assertEqual(
+            from_kwargs(direct_relation_values, {"target": relation_target, "kwargs": {"value": "4"}}),
+            {"target": relation_target, "kwargs": {"value": 4}},
+        )
+        self.assertEqual(to_dict({}, type_class=direct_relation_values), {})
+        self.assertEqual(
+            to_dict({"target": relation_target}, type_class=direct_relation_values),
+            {"target": f"{__name__}.relation_target"},
+        )
+        self.assertEqual(
+            to_dict({"target": relation_target, "kwargs": {"value": "4"}}, type_class=direct_relation_values),
+            {"target": f"{__name__}.relation_target", "kwargs": {"value": 4}},
+        )
+        self.assertEqual(
+            json.loads(
+                cast(
+                    str,
+                    to_json(
+                        {"target": relation_target, "kwargs": {"value": "4"}},
+                        indent=None,
+                        type_class=direct_relation_values,
+                    ),
+                )
+            ),
+            {"target": f"{__name__}.relation_target", "kwargs": {"value": 4}},
+        )
+        class_value = from_dict(
+            RelationValues,
+            {
+                "target": CountedRelationClass,
+                "kwargs": {"value": "5", "nested": {"a": "1", "b": 2}, "states": ["ready"]},
+            },
+        )
+        self.assertEqual(class_value.kwargs, {"value": 5, "nested": Nested(1, 2), "states": [State.READY]})
+        self.assertEqual(from_json(RelationValues, s=to_json(class_value, indent=None)), class_value)
+        self.assertEqual(relation_target_calls, 0)
+        self.assertEqual(relation_class_calls, 0)
+        relation_factory_calls.update(target=0, kwargs=0)
+        nested_explicit = from_dict(
+            NestedRelationOwner,
+            {"nested": {"target": relation_target, "kwargs": {"value": "6"}}},
+        )
+        self.assertEqual(nested_explicit.nested.kwargs, {"value": 6, "label": "factory"})
+        self.assertEqual(relation_factory_calls, {"target": 0, "kwargs": 1})
+        relation_factory_calls.update(target=0, kwargs=0)
+        nested = from_dict(NestedRelationOwner, {"nested": {"kwargs": {"value": "6"}}})
+        self.assertEqual(nested.nested.kwargs, {"value": 6, "label": "factory"})
+        multiple = from_dict(
+            MultipleRelationValues,
+            {"first_kwargs": {"value": "7"}, "second_kwargs": {"value": "8", "label": "second"}},
+        )
+        self.assertEqual(multiple.first_kwargs, {"value": 7, "label": "factory"})
+        self.assertEqual(multiple.second_kwargs, {"value": 8, "label": "second"})
+        self.assertEqual(relation_factory_calls, {"target": 1, "kwargs": 2})
+        fully_supplied = from_dict(
+            FactoryRelationValues,
+            {"target": relation_target, "kwargs": {"value": "9", "label": "supplied"}},
+        )
+        self.assertEqual(fully_supplied.kwargs, {"value": 9, "label": "supplied"})
+        self.assertEqual(relation_factory_calls, {"target": 1, "kwargs": 2})
+        explicit = from_dict(FactoryRelationValues, {"target": relation_target, "kwargs": {"value": "9"}})
+        self.assertEqual(explicit.kwargs, {"value": 9, "label": "factory"})
+        self.assertEqual(relation_factory_calls, {"target": 1, "kwargs": 3})
+        defaulted = from_dict(FactoryRelationValues, {})
+        self.assertEqual(defaulted.kwargs, {"label": "factory"})
+        self.assertEqual(relation_factory_calls, {"target": 2, "kwargs": 4})
+        declared_kwargs_copy_calls = 0
+        copied = from_dict(DeclaredDefaultRelationValues, {"kwargs": {"value": "10"}})
+        self.assertEqual(copied.kwargs, {"value": 10, "label": "declared"})
+        self.assertEqual(declared_kwargs_copy_calls, 1)
+        copied.kwargs["label"] = "updated"
+        self.assertEqual(declared_kwargs, {"label": "declared"})
+        declared_kwargs_copy_calls = 0
+        fully_supplied_declared = from_dict(
+            DeclaredDefaultRelationValues,
+            {"kwargs": {"value": "10", "label": "supplied"}},
+        )
+        self.assertEqual(fully_supplied_declared.kwargs, {"value": 10, "label": "supplied"})
+        self.assertEqual(declared_kwargs_copy_calls, 0)
+        relation_factory_calls.update(target=0, kwargs=0)
+        self.assertEqual(
+            to_dict(FactoryRelationValues(target=relation_target, kwargs={"value": 11})),
+            {"target": f"{__name__}.relation_target", "kwargs": {"value": 11}},
+        )
+        self.assertEqual(relation_factory_calls, {"target": 0, "kwargs": 0})
+        with self.assertRaisesRegex(TypeError, "RelationValues.kwargs.unknown: unknown"):
+            kwargs_from_dict(relation_target, {"unknown": 1}, field_name="RelationValues.kwargs")
+        with self.assertRaisesRegex(TypeError, "RelationValues.kwargs.value: missing"):
+            kwargs_from_dict(relation_target, {}, field_name="RelationValues.kwargs")
+        with self.assertRaisesRegex(TypeError, "RelationValues.kwargs: expected a mapping"):
+            kwargs_from_dict(relation_target, cast(Any, []), field_name="RelationValues.kwargs")
+        with self.assertRaisesRegex(TypeError, "direct_relation_values.target: missing selector"):
+            from_kwargs(direct_relation_values, {"kwargs": {"value": 1}})
+        with self.assertRaisesRegex(TypeError, "direct_relation_values.kwargs: missing selector"):
+            to_dict({"kwargs": {"value": 1}}, type_class=direct_relation_values)
+
+    def test_nested_kwargs_errors_keep_the_containing_path(self):
+        with self.assertRaisesRegex(TypeError, "StrictNestedRelationOwner.nested.kwargs.value: missing"):
+            from_dict(StrictNestedRelationOwner, {"nested": {}})
+        with self.assertRaisesRegex(TypeError, "StrictNestedRelationOwner.nested.kwargs.unknown: unknown"):
+            from_dict(StrictNestedRelationOwner, {"nested": {"kwargs": {"unknown": 1}}})
+
+        def unsupported(values: set[int]) -> None:
+            pass
+
+        with self.assertRaisesRegex(TypeError, "StrictNestedRelationOwner.nested.kwargs: values: unsupported"):
+            from_dict(StrictNestedRelationOwner, {"nested": {"target": unsupported, "kwargs": {}}})
+        with self.assertRaisesRegex(TypeError, "StrictNestedRelationOwner.nested.kwargs.unknown: unknown"):
+            to_dict(StrictNestedRelationOwner(StrictNestedRelationValues(kwargs={"unknown": 1})))
+        with self.assertRaisesRegex(TypeError, "StructuredTargetRelationOwner.kwargs.config.kwargs.unknown: unknown"):
+            to_dict(StructuredTargetRelationOwner(kwargs={"config": SelectedRelationConfig(kwargs={"unknown": 1})}))
+        with self.assertRaisesRegex(
+            TypeError, "UnionStructuredTargetRelationOwner.kwargs.config.kwargs.unknown: unknown"
+        ):
+            to_dict(
+                UnionStructuredTargetRelationOwner(kwargs={"config": SelectedRelationConfig(kwargs={"unknown": 1})})
+            )
+        self.assertEqual(
+            to_dict(StructuredTargetRelationOwner(kwargs={"config": None})),
+            {"target": f"{__name__}.selected_relation_config_target", "kwargs": {"config": None}},
+        )
 
     def test_kwargs_relation_schemas_reject_invalid_links(self):
+        with self.assertRaisesRegex(TypeError, "^an annotation can contain at most one CliArg or Metadata$"):
+            metadata_from_annotations([Metadata(), Metadata()])
+
         @dataclass
         class DuplicateMetadata:
             value: Annotated[int, Metadata(), Metadata()] = 1
@@ -295,9 +557,9 @@ class BasicTests(unittest.TestCase):
         self.assertIs(load_callable(reference), QualifiedCallable.nested)
         self.assertEqual(dump_callable(QualifiedCallable.nested), reference)
         self.assertEqual(to_dict(CallableValue(QualifiedCallable.nested)), {"callback": reference})
-        with self.assertRaisesRegex(ValueError, "expected <module_name>.<qualname>"):
+        with self.assertRaises(ModuleNotFoundError):
             load_callable("malformed")
-        with self.assertRaisesRegex(ModuleNotFoundError, "no importable module prefix"):
+        with self.assertRaises(ModuleNotFoundError):
             load_callable("missing.module.target")
         with self.assertRaises(AttributeError):
             load_callable(f"{__name__}.QualifiedCallable.missing")
@@ -459,6 +721,21 @@ class BasicTests(unittest.TestCase):
             from_dict(ConversionValues, {"enabled": "maybe"})
 
     def test_public_conversion_helpers(self):
+        @dataclass(frozen=True)
+        class Child:
+            value: int
+
+        @dataclass
+        class Owner:
+            payload: Any = Child(1)
+
+        @dataclass
+        class OptionalOwner:
+            payload: Child | None = None
+
+        child = Child(2)
+        self.assertIs(to_dict(Owner(child))["payload"], child)
+        self.assertEqual(to_dict(OptionalOwner()), {"payload": None})
         self.assertEqual(effective_type(list[int] | None, "values"), list[int])
         self.assertEqual(is_compat(dict[int, float], str), (True, dict))
         self.assertEqual(from_dict_value(["1"], list[int], list, "values"), [1])
