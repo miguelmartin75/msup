@@ -14,7 +14,7 @@ documentation, examples, and runner changes do not count.
 
 ## Status
 
-- Phase 1: Not started
+- Phase 1: Complete
 - Phase 2: Not started
 - Phase 3: Not started
 - Phase 4: Not started
@@ -505,7 +505,11 @@ no-invocation contract.
 
 ## Phase 1: Link and validate relation fields
 
-**Status:** Not started
+**Status:** Complete
+
+**Validation result:** 79 tests and 44 subtests passed; `./run.py check`
+passed; `git diff --check` passed; correctness and code-guideline reviews
+approved the phase.
 
 ### Implementation
 

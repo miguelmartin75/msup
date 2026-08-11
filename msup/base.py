@@ -6,9 +6,10 @@ from collections.abc import Callable as Callable2, Mapping
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
 from types import UnionType
-from typing import Annotated, Any, Callable, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Callable, TypeAliasType, TypeVar, Union, get_args, get_origin, get_type_hints
 
 T = TypeVar("T")
+type Kwargs = dict[str, Any]
 
 
 # fmt: off
@@ -24,6 +25,10 @@ def to_json(
 ) -> str | None: ...
 def is_pydantic_model(candidate: type | object) -> bool: ...
 def is_structured_model(candidate: type | object) -> bool: ...
+def metadata_from_annotations(annotations: list[Any], field_name: str = "") -> "Metadata | None": ...
+def selected_target_fields(target: type | Callable[..., Any]) -> "list[FieldSpec]": ...
+def load_callable(name: str) -> Any: ...
+def dump_callable(value: Any) -> str: ...
 # fmt: on
 
 
@@ -44,13 +49,23 @@ else:
         PydanticV1BaseModel = pydantic_v1_base_model
 
 
+@dataclass(frozen=True, kw_only=True)
+class Metadata:
+    """Shared field metadata; kwargs_for links dependent kwargs to its selector."""
+
+    kwargs_for: str | None = None
+
+
 @dataclass
 class FieldSpec:
+    """A reflected field whose kwargs_relation links only to its preceding selector."""
+
     name: str
     annotation: Any
     annotations: list[Any]
     default: Any = MISSING
     default_factory: Any = MISSING
+    kwargs_relation: "FieldSpec | None" = None
 
 
 def unwrap_annotated(annotation: Any) -> tuple[Any, list[Any]]:
@@ -59,6 +74,26 @@ def unwrap_annotated(annotation: Any) -> tuple[Any, list[Any]]:
     else:
         annotations = []
     return annotation, annotations
+
+
+def normalize_annotation(annotation: Any) -> Any:
+    annotation, _ = unwrap_annotated(annotation)
+    if isinstance(annotation, TypeAliasType):
+        result = annotation.__value__
+    else:
+        result = annotation
+    return result
+
+
+def metadata_from_annotations(annotations: list[Any], field_name: str = "") -> Metadata | None:
+    """Returns the sole Metadata annotation and rejects duplicates."""
+
+    metadata = [value for value in annotations if isinstance(value, Metadata)]
+    if len(metadata) > 1:
+        prefix = f"{field_name}: " if field_name else ""
+        raise TypeError(f"{prefix}an annotation can contain at most one CliArg or Metadata")
+    result = metadata[0] if metadata else None
+    return result
 
 
 def is_pydantic_model(candidate: type | object) -> bool:
@@ -163,16 +198,81 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
             if annotation is inspect._empty:
                 annotation = None
             result.append(FieldSpec(name, annotation, annotations, default, MISSING))
+
+    supports_relations = is_dataclass(target) or is_function_or_method
+    owner_name = target.__qualname__
+    linked_selectors: set[str] = set()
+    for field_index, field in enumerate(result):
+        field_name = f"{owner_name}.{field.name}"
+        metadata = metadata_from_annotations(field.annotations, field_name)
+        if metadata is not None and metadata.kwargs_for is not None:
+            if not supports_relations:
+                raise TypeError(f"{field_name}: kwargs_for is only supported by dataclasses and functions")
+            relation_name = metadata.kwargs_for
+            relation_annotation = normalize_annotation(field.annotation)
+            if get_origin(relation_annotation) is not dict or get_args(relation_annotation) != (str, Any):
+                raise TypeError(f"{field_name}: kwargs_for fields must be annotated as dict[str, Any] or Kwargs")
+            if field.name == relation_name:
+                raise TypeError(f"{field_name}: kwargs_for must name a different selector field")
+
+            selector_index = next((index for index, item in enumerate(result) if item.name == relation_name), None)
+            if selector_index is None:
+                raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} does not exist")
+            if selector_index >= field_index:
+                raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} must precede the kwargs field")
+            selector = result[selector_index]
+            selector_metadata = metadata_from_annotations(selector.annotations, f"{owner_name}.{selector.name}")
+            if selector_metadata is not None and selector_metadata.kwargs_for is not None:
+                raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} cannot be a kwargs field")
+            if annotation_origin(selector.annotation) is not Callable2:
+                raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} must be annotated as Callable")
+            if relation_name in linked_selectors:
+                raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} already has a kwargs field")
+            field.kwargs_relation = selector
+            linked_selectors.add(relation_name)
     return result
 
 
 def load_callable(name: str) -> Any:
-    idx = name.rfind(".")
-    assert idx != -1, f"expected <module_name>.<name>, got {name}"
-    module_name = name[0:idx]
-    fn_name = name[idx + 1 :]
-    mod = importlib.import_module(module_name)
-    return getattr(mod, fn_name)
+    """Loads a trusted callable from a canonical module.qualname reference."""
+
+    if "." not in name:
+        raise ValueError(f"expected <module_name>.<qualname>, got {name}")
+    parts = name.split(".")
+    module = None
+    module_size = len(parts) - 1
+    while module_size:
+        module_name = ".".join(parts[:module_size])
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError as error:
+            if error.name is None or (error.name != module_name and not module_name.startswith(f"{error.name}.")):
+                raise
+            module_size -= 1
+        else:
+            break
+    if module is None:
+        raise ModuleNotFoundError(f"no importable module prefix in {name!r}")
+
+    result: Any = module
+    for attribute in parts[module_size:]:
+        result = getattr(result, attribute)
+    return result
+
+
+def dump_callable(value: Any) -> str:
+    """Returns a canonical reference only when it reloads to the same callable."""
+
+    if not (inspect.isclass(value) or inspect.isfunction(value) or inspect.ismethod(value)):
+        raise TypeError(f"expected an importable class, function, or method, got {type(value)}")
+    module_name = getattr(value, "__module__", None)
+    qualname = getattr(value, "__qualname__", None)
+    if not module_name or not qualname or "<locals>" in qualname or "<lambda>" in qualname:
+        raise TypeError(f"{value}: cannot be represented by an importable module.qualname")
+    result = f"{module_name}.{qualname}"
+    if load_callable(result) is not value:
+        raise TypeError(f"{value}: module.qualname {result!r} does not resolve to the same object")
+    return result
 
 
 def maybe_idx(xs: tuple[Any, ...] | list[Any], idx: int, default: Any = None) -> Any:
@@ -180,7 +280,7 @@ def maybe_idx(xs: tuple[Any, ...] | list[Any], idx: int, default: Any = None) ->
 
 
 def get_optional_type(annotation: Any) -> Any | None:
-    annotation, _ = unwrap_annotated(annotation)
+    annotation = normalize_annotation(annotation)
     args = get_args(annotation)
     if get_origin(annotation) in (Union, UnionType) and len(args) == 2 and type(None) in args:
         result = next(arg for arg in args if arg is not type(None))
@@ -190,7 +290,7 @@ def get_optional_type(annotation: Any) -> Any | None:
 
 
 def get_collection_args(annotation: Any, count: int = 0) -> tuple[Any, ...]:
-    annotation, _ = unwrap_annotated(annotation)
+    annotation = normalize_annotation(annotation)
     origin = annotation_origin(annotation)
     args = get_args(annotation)
     if origin is dict:
@@ -215,12 +315,12 @@ def is_optional(annotation: Any) -> bool:
 
 
 def annotation_origin(annotation: Any) -> Any:
-    annotation, _ = unwrap_annotated(annotation)
+    annotation = normalize_annotation(annotation)
     return get_origin(annotation) or annotation
 
 
 def effective_type(annotation: Any, field_name: str) -> Any:
-    annotation, _ = unwrap_annotated(annotation)
+    annotation = normalize_annotation(annotation)
     optional_type = get_optional_type(annotation)
     if optional_type is not None:
         result = optional_type
@@ -306,6 +406,58 @@ def is_compat(field_type: Any, concrete_type: type) -> tuple[bool, Any | None]:
             return True, origin
         else:
             return origin is concrete_origin, origin if origin is concrete_origin else None
+
+
+def _conversion_annotation_supported(annotation: Any) -> bool:
+    annotation = normalize_annotation(annotation)
+    origin = annotation_origin(annotation)
+    if annotation in (Any, type(None)):
+        result = True
+    elif origin in (Union, UnionType):
+        result = all(_conversion_annotation_supported(member) for member in get_args(annotation))
+    elif origin is dict:
+        key_type, value_type = get_collection_args(annotation)
+        result = _conversion_annotation_supported(key_type) and _conversion_annotation_supported(value_type)
+    elif origin in (list, tuple):
+        result = all(_conversion_annotation_supported(item) for item in get_collection_args(annotation))
+    elif origin in (int, float, str, bool, Callable2):
+        result = True
+    elif enum_type(annotation) is not None:
+        result = True
+    else:
+        result = is_structured_model(annotation)
+    return result
+
+
+def selected_target_fields(target: type | Callable[..., Any]) -> list[FieldSpec]:
+    """Reflects a selected target's supported explicit signature without invoking it."""
+
+    is_function_or_method = inspect.isfunction(target) or inspect.ismethod(target)
+    if not inspect.isclass(target) and not is_function_or_method:
+        raise TypeError(f"{target}: selected targets must be classes, functions, or methods")
+
+    inspected_target = target.__init__ if inspect.isclass(target) else target
+    signature = inspect.signature(inspected_target)
+    hints = get_type_hints(inspected_target, include_extras=True)
+    result = []
+    for name, parameter in signature.parameters.items():
+        if inspect.isclass(target) and name in ("self", "cls"):
+            continue
+        if parameter.kind is parameter.POSITIONAL_ONLY:
+            raise TypeError(f"{name}: selected target parameters cannot be positional-only")
+        if parameter.kind is parameter.VAR_POSITIONAL:
+            raise TypeError(f"{name}: selected target parameters cannot use *args")
+        if parameter.kind is parameter.VAR_KEYWORD:
+            raise TypeError(f"{name}: selected target parameters cannot use **kwargs")
+        annotation = hints.get(name, parameter.annotation)
+        if annotation is inspect.Parameter.empty:
+            raise TypeError(f"{name}: selected target parameters must have an annotation")
+        annotation, annotations = unwrap_annotated(annotation)
+        if not _conversion_annotation_supported(annotation):
+            raise TypeError(f"{name}: unsupported selected target annotation: {annotation}")
+        default = MISSING if parameter.default is inspect._empty else parameter.default
+        result.append(FieldSpec(name, annotation, annotations, default, MISSING))
+    return result
 
 
 def dict_from_str(x: str) -> dict[Any, Any]:
@@ -452,7 +604,7 @@ def to_dict_value(x: Any, field_type: Any) -> Any:
     elif origin is Callable2:
         if not callable(x):
             raise TypeError(f"expected callable value for {field_type}, got {type(x)}")
-        return f"{x.__module__}.{x.__name__}"
+        return dump_callable(x)
     elif origin in (int, float, str, bool):
         return origin(x)
     else:

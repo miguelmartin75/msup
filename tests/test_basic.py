@@ -2,19 +2,25 @@ import json
 import unittest
 from dataclasses import MISSING, dataclass, field as dataclass_field
 from enum import Enum, IntEnum
+from functools import partial
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Annotated, Any, Callable, Union, cast
 
 from msup.base import (
+    Kwargs,
+    Metadata,
     dict_from_str,
+    dump_callable,
     effective_type,
     fields_or_init_kwargs,
     from_dict,
     from_dict_value,
     from_json,
     is_compat,
+    load_callable,
+    selected_target_fields,
     to_dict,
     to_dict_value,
     to_json,
@@ -115,6 +121,10 @@ def function_field_values(
     return required, callback, defaulted, unannotated, values, options
 
 
+def function_self_cls_values(self: int, cls: str) -> None:
+    pass
+
+
 def function_serialization_values(
     message: Annotated[str, "message metadata"],
     count: int,
@@ -126,8 +136,35 @@ def function_serialization_values(
     return message, count, nested, values, callback, omitted
 
 
+class QualifiedCallable:
+    @staticmethod
+    def nested(value: int) -> int:
+        return value + 1
+
+
+def relation_target(value: int, *, label: str = "default") -> None:
+    pass
+
+
+def identity_mismatch(value: int) -> int:
+    return value
+
+
+@dataclass
+class RelationValues:
+    target: Callable[..., Any]
+    kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")]
+
+
+def direct_relation_values(
+    target: Callable[..., Any],
+    kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")],
+) -> None:
+    pass
+
+
 class MethodFieldValues:
-    def method(self, required: int, defaulted: str = "default value"):
+    def method(self: Any, required: int, defaulted: str = "default value"):
         return required, defaulted
 
 
@@ -144,7 +181,7 @@ class BasicTests(unittest.TestCase):
         self.assertIsNone(field_info[3].annotation)
         self.assertIsNone(field_info[3].default)
 
-    def test_method_field_discovery_supports_bound_and_unbound_methods(self):
+    def test_method_field_discovery_omits_reserved_names(self):
         expected = [("required", MISSING), ("defaulted", "default value")]
         for method in (MethodFieldValues.method, MethodFieldValues().method):
             with self.subTest(method=method):
@@ -152,11 +189,178 @@ class BasicTests(unittest.TestCase):
                     [(field.name, field.default) for field in fields_or_init_kwargs(method)],
                     expected,
                 )
+        self.assertEqual(
+            [(field.name, field.default) for field in fields_or_init_kwargs(function_self_cls_values)],
+            [],
+        )
+
+    def test_selected_target_fields_preserve_explicit_reserved_names(self):
+        self.assertEqual(
+            [field.name for field in selected_target_fields(function_self_cls_values)],
+            ["self", "cls"],
+        )
+        self.assertEqual(
+            [field.name for field in selected_target_fields(MethodFieldValues.method)],
+            ["self", "required", "defaulted"],
+        )
+        self.assertEqual(
+            [field.name for field in selected_target_fields(MethodFieldValues().method)],
+            ["required", "defaulted"],
+        )
 
     def test_shared_field_discovery_preserves_all_annotated_metadata(self):
         field_info = fields_or_init_kwargs(AnnotatedMetadataValues)[0]
         self.assertEqual(field_info.annotation, int)
         self.assertEqual(field_info.annotations, ["first", CliArg(help="value"), ("second",)])
+
+    def test_kwargs_relations_link_preceding_callable_fields(self):
+        dataclass_fields = fields_or_init_kwargs(RelationValues)
+        function_fields = fields_or_init_kwargs(direct_relation_values)
+
+        self.assertIs(dataclass_fields[1].kwargs_relation, dataclass_fields[0])
+        self.assertIs(function_fields[1].kwargs_relation, function_fields[0])
+        self.assertIs(dataclass_fields[1].annotation, Kwargs)
+        self.assertEqual(dataclass_fields[1].annotation.__value__, dict[str, Any])
+        value = from_dict(RelationValues, {"target": relation_target, "kwargs": {"value": "3"}})
+        self.assertIs(value.target, relation_target)
+        self.assertEqual(value.kwargs, {"value": "3"})
+
+    def test_kwargs_relation_schemas_reject_invalid_links(self):
+        @dataclass
+        class DuplicateMetadata:
+            value: Annotated[int, Metadata(), Metadata()] = 1
+
+        @dataclass
+        class WrongDependentType:
+            target: Callable[..., Any]
+            kwargs: Annotated[dict[str, int], Metadata(kwargs_for="target")]
+
+        @dataclass
+        class MissingSelector:
+            kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")]
+
+        @dataclass
+        class SelfSelector:
+            kwargs: Annotated[Kwargs, Metadata(kwargs_for="kwargs")]
+
+        @dataclass
+        class ForwardSelector:
+            kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")]
+            target: Callable[..., Any]
+
+        @dataclass
+        class NonCallableSelector:
+            target: int
+            kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")]
+
+        @dataclass
+        class ReusedSelector:
+            target: Callable[..., Any]
+            first: Annotated[Kwargs, Metadata(kwargs_for="target")]
+            second: Annotated[dict[str, Any], Metadata(kwargs_for="target")]
+
+        @dataclass
+        class RelationSelector:
+            target: Callable[..., Any]
+            kwargs: Annotated[Kwargs, Metadata(kwargs_for="target")]
+            other: Annotated[dict[str, Any], Metadata(kwargs_for="kwargs")]
+
+        class RegularRelationOwner:
+            def __init__(
+                self,
+                target: Callable[..., Any],
+                kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")],
+            ):
+                self.target = target
+                self.kwargs = kwargs
+
+        cases = [
+            (DuplicateMetadata, "value", "at most one CliArg"),
+            (WrongDependentType, "kwargs", "dict\\[str, Any\\].*Kwargs"),
+            (MissingSelector, "kwargs", "does not exist"),
+            (SelfSelector, "kwargs", "different selector"),
+            (ForwardSelector, "kwargs", "must precede"),
+            (NonCallableSelector, "kwargs", "must be annotated as Callable"),
+            (ReusedSelector, "second", "already has a kwargs field"),
+            (RelationSelector, "other", "cannot be a kwargs field"),
+            (RegularRelationOwner, "kwargs", "only supported by dataclasses and functions"),
+        ]
+        for owner, field_name, message in cases:
+            with self.subTest(owner=owner):
+                with self.assertRaisesRegex(TypeError, f"{owner.__name__}\\.{field_name}.*{message}"):
+                    fields_or_init_kwargs(owner)
+
+    def test_canonical_callable_references_support_qualified_names(self):
+        reference = f"{__name__}.QualifiedCallable.nested"
+        self.assertIs(load_callable(reference), QualifiedCallable.nested)
+        self.assertEqual(dump_callable(QualifiedCallable.nested), reference)
+        self.assertEqual(to_dict(CallableValue(QualifiedCallable.nested)), {"callback": reference})
+        with self.assertRaisesRegex(ValueError, "expected <module_name>.<qualname>"):
+            load_callable("malformed")
+        with self.assertRaisesRegex(ModuleNotFoundError, "no importable module prefix"):
+            load_callable("missing.module.target")
+        with self.assertRaises(AttributeError):
+            load_callable(f"{__name__}.QualifiedCallable.missing")
+
+        def local(value: int) -> int:
+            return value
+
+        for value in (local, lambda value: value, partial(increment, 1)):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(TypeError, "importable"):
+                    dump_callable(value)
+
+        original_qualname = identity_mismatch.__qualname__
+        try:
+            identity_mismatch.__qualname__ = QualifiedCallable.nested.__qualname__
+            with self.assertRaisesRegex(TypeError, "same object"):
+                dump_callable(identity_mismatch)
+        finally:
+            identity_mismatch.__qualname__ = original_qualname
+
+    def test_selected_target_signatures_are_strict(self):
+        class ClassTarget:
+            def __init__(self, value: int, *, enabled: bool = False):
+                self.value = value
+                self.enabled = enabled
+
+        def keyword_only(value: int, *, label: str) -> None:
+            pass
+
+        def unannotated(value) -> None:
+            pass
+
+        def positional_only(value: int, /) -> None:
+            pass
+
+        def variadic_positional(*values: int) -> None:
+            pass
+
+        def variadic_keyword(**values: int) -> None:
+            pass
+
+        def unsupported(values: set[int]) -> None:
+            pass
+
+        class CallableInstance:
+            def __call__(self, value: int) -> None:
+                pass
+
+        self.assertEqual([field.name for field in selected_target_fields(ClassTarget)], ["value", "enabled"])
+        self.assertEqual([field.name for field in selected_target_fields(keyword_only)], ["value", "label"])
+        cases = [
+            (unannotated, "must have an annotation"),
+            (positional_only, "cannot be positional-only"),
+            (variadic_positional, "cannot use \\*args"),
+            (variadic_keyword, "cannot use \\*\\*kwargs"),
+            (unsupported, "unsupported selected target annotation"),
+            (CallableInstance(), "selected targets must be classes, functions, or methods"),
+            (3, "selected targets must be classes, functions, or methods"),
+        ]
+        for target, message in cases:
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(TypeError, message):
+                    selected_target_fields(cast(Any, target))
 
     def test_representative_conversion_types_round_trip(self):
         value = from_dict(

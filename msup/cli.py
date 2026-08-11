@@ -4,10 +4,12 @@ import os
 import sys
 from collections.abc import Callable as Callable2
 from dataclasses import MISSING, dataclass, is_dataclass
-from typing import Any, Callable, cast, get_args, get_origin
+from typing import Any, Callable, cast, get_args
 
 from msup.base import (
     FieldSpec,
+    Metadata,
+    annotation_origin,
     enum_type,
     effective_type,
     fields_or_init_kwargs,
@@ -16,6 +18,7 @@ from msup.base import (
     has_default_value,
     is_optional,
     is_structured_model,
+    metadata_from_annotations,
 )
 
 
@@ -23,7 +26,7 @@ def cli(cmd_or_cmds: Callable[..., Any] | dict[Callable[..., Any], str], **argsp
 
 
 @dataclass(frozen=True)
-class CliArg:
+class CliArg(Metadata):
     help: str = ""
     short: str | None = ""
     env: str | None = None
@@ -33,10 +36,9 @@ class CliArg:
 
 
 def cliarg_from_annotations(annotations: list[Any]) -> CliArg | None:
-    cli_args = [value for value in annotations if isinstance(value, CliArg)]
-    if len(cli_args) > 1:
-        raise TypeError("an annotation can contain at most one CliArg")
-    return cli_args[0] if cli_args else None
+    metadata = metadata_from_annotations(annotations)
+    result = metadata if isinstance(metadata, CliArg) else None
+    return result
 
 
 def strtobool(value: str) -> bool:
@@ -77,7 +79,7 @@ def enum_argument_type(annotation: Any, field_name: str) -> Callable[[str], Any]
 
 def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], Any]:
     annotation = effective_type(annotation, field_name)
-    origin = get_origin(annotation) or annotation
+    origin = annotation_origin(annotation)
     if annotation is Any or is_structured_model(annotation) or origin in (dict, Callable2):
         result = str
     elif origin is list:
@@ -102,7 +104,7 @@ def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], An
 
 def _add_argument(parser, args, kwargs, annotation, field_name, help_text, positional):
     field_type = effective_type(annotation, field_name)
-    origin = get_origin(field_type) or field_type
+    origin = annotation_origin(field_type)
     kwargs = dict(kwargs)
     kwargs["default"] = argparse.SUPPRESS
     kwargs["help"] = help_text
@@ -173,7 +175,7 @@ def _add_args(
 
         positional = cli_arg.pos
         optional = cli_arg.opt
-        collection_origin = get_origin(effective_type(annotation, name))
+        collection_origin = annotation_origin(effective_type(annotation, name))
         if positional and collection_origin in (list, tuple) and field_index != len(command_fields) - 1:
             raise TypeError(f"{name}: positional collection arguments must be declared last")
         if positional:
@@ -241,7 +243,7 @@ def add_direct_args(parser, command_args: list[FieldSpec], pos_arg_config: bool 
 
         positional = cli_arg.pos
         optional = cli_arg.opt
-        collection_origin = get_origin(effective_type(annotation, name))
+        collection_origin = annotation_origin(effective_type(annotation, name))
         if positional and collection_origin in (list, tuple) and field_index != len(command_args) - 1:
             raise TypeError(f"{name}: positional collection arguments must be declared last")
         if positional:

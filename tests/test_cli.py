@@ -9,6 +9,7 @@ from enum import Enum
 from io import StringIO
 from typing import Annotated, Any, Callable, Optional, cast
 
+from msup.base import Metadata
 from msup.cli import CliArg, _from_cli_args, argument_type, cli, strtobool
 
 
@@ -404,6 +405,7 @@ class CliContractTests(unittest.TestCase):
         self.assertTrue(argument_type(bool, "enabled")("yes"))
 
     def test_cliarg_accepts_no_short_option_and_is_immutable(self):
+        self.assertIsInstance(CliArg(), Metadata)
         self.assertEqual(CliArg().short, "")
         self.assertEqual(CliArg(short="").short, "")
         self.assertIsNone(CliArg(short=None).short)
@@ -568,11 +570,21 @@ class CliContractTests(unittest.TestCase):
         class DuplicateCliArgArgs:
             value: Annotated[int, CliArg(help="first"), CliArg(help="second")] = 1
 
+        @dataclass
+        class DuplicateSharedMetadataArgs:
+            value: Annotated[int, Metadata(), CliArg(help="second")] = 1
+
         def duplicate_cliarg_command(args: DuplicateCliArgArgs):
             received.append(args)
 
         with self.assertRaisesRegex(TypeError, "at most one CliArg"):
             cli(duplicate_cliarg_command)
+
+        def duplicate_shared_metadata_command(args: DuplicateSharedMetadataArgs):
+            received.append(args)
+
+        with self.assertRaisesRegex(TypeError, "at most one CliArg"):
+            cli(duplicate_shared_metadata_command)
 
     def test_direct_parameters_convert_values_and_keep_python_defaults(self):
         result = self.invoke(

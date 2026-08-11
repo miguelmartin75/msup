@@ -6,12 +6,21 @@ from enum import Enum
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Annotated
+from typing import Annotated, Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError
 from pydantic.v1 import BaseModel as PydanticV1BaseModel
 
-from msup.base import from_dict, from_json, is_pydantic_model, to_dict, to_json, to_kwargs
+from msup.base import (
+    Metadata,
+    fields_or_init_kwargs,
+    from_dict,
+    from_json,
+    is_pydantic_model,
+    to_dict,
+    to_json,
+    to_kwargs,
+)
 from msup.cli import CliArg, cli
 
 
@@ -210,6 +219,14 @@ class PydanticSerializationTests(unittest.TestCase):
     def test_pydantic_v1_models_are_rejected_explicitly(self):
         with self.assertRaisesRegex(TypeError, "Pydantic v1 models are not supported"):
             from_dict(LegacyPydanticValues, {"required": 3})
+
+    def test_pydantic_relation_owners_are_rejected(self):
+        class RelationOwner(BaseModel):
+            target: Callable[..., Any]
+            kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")]
+
+        with self.assertRaisesRegex(TypeError, "RelationOwner.kwargs.*kwargs_for is only supported"):
+            fields_or_init_kwargs(RelationOwner)
 
 
 class PydanticCliTests(unittest.TestCase):
