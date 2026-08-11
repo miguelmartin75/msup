@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Annotated, Any, Callable
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AliasChoices, AliasPath, BaseModel, Field, ValidationError, model_validator
 from pydantic.v1 import BaseModel as PydanticV1BaseModel
 
 from msup.base import (
@@ -80,6 +80,9 @@ class RequiredChildValues(BaseModel):
 
 
 selected_pydantic_target_calls = 0
+pydantic_dynamic_owner_calls = 0
+pydantic_dynamic_raw_values = []
+pydantic_containing_factory_calls = 0
 
 
 def selected_pydantic_target(child: Child, label: str = "default") -> None:
@@ -91,6 +94,37 @@ def selected_pydantic_target(child: Child, label: str = "default") -> None:
 class SelectedPydanticTargetOwner:
     target: Callable[..., Any] = selected_pydantic_target
     kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")] = field(default_factory=dict)
+
+
+class PydanticDynamicOwner(BaseModel):
+    target: Callable[..., Any] = Field(default=selected_pydantic_target, validation_alias="selected")
+    kwargs: Annotated[dict[str, Any], CliArg(kwargs_for="target")] = Field(
+        default_factory=dict,
+        validation_alias="target_args",
+    )
+    ordinary: int = 1
+
+    @model_validator(mode="before")
+    @classmethod
+    def retain_raw_ordinary_value(cls, values):
+        pydantic_dynamic_raw_values.append(values.get("ordinary"))
+        return values
+
+    @model_validator(mode="after")
+    def count_construction(self):
+        global pydantic_dynamic_owner_calls
+        pydantic_dynamic_owner_calls += 1
+        return self
+
+
+def pydantic_containing_factory() -> PydanticDynamicOwner:
+    global pydantic_containing_factory_calls
+    pydantic_containing_factory_calls += 1
+    return PydanticDynamicOwner()
+
+
+class PydanticContainingOwner(BaseModel):
+    job: PydanticDynamicOwner = Field(default_factory=pydantic_containing_factory)
 
 
 pydantic_received = []
@@ -109,6 +143,18 @@ def factory_child_command(args: FactoryChildValues):
 
 
 def required_child_command(args: RequiredChildValues):
+    pydantic_received.append(args)
+
+
+def selected_pydantic_target_command(args: SelectedPydanticTargetOwner):
+    pydantic_received.append(args)
+
+
+def pydantic_dynamic_owner_command(args: PydanticDynamicOwner):
+    pydantic_received.append(args)
+
+
+def pydantic_containing_owner_command(args: PydanticContainingOwner):
     pydantic_received.append(args)
 
 
@@ -235,13 +281,71 @@ class PydanticSerializationTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "Pydantic v1 models are not supported"):
             from_dict(LegacyPydanticValues, {"required": 3})
 
-    def test_pydantic_relation_owners_are_rejected(self):
-        class RelationOwner(BaseModel):
-            target: Callable[..., Any]
-            kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")]
+        def legacy_command(args: LegacyPydanticValues):
+            pass
 
-        with self.assertRaisesRegex(TypeError, "RelationOwner.kwargs.*kwargs_for is only supported"):
-            fields_or_init_kwargs(RelationOwner)
+        with self.assertRaisesRegex(TypeError, "Pydantic v1 models are not supported"):
+            cli(legacy_command)
+
+    def test_pydantic_relation_owners_use_native_validation_and_string_aliases(self):
+        calls = []
+        raw_values = []
+
+        class RelationOwner(BaseModel):
+            target: Callable[..., Any] = Field(
+                default=selected_pydantic_target,
+                validation_alias="selected",
+            )
+            kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")] = Field(
+                default_factory=dict,
+                validation_alias="target_args",
+            )
+            ordinary: int
+
+            @model_validator(mode="before")
+            @classmethod
+            def retain_raw_ordinary_value(cls, values):
+                raw_values.append(values.get("ordinary"))
+                return values
+
+            @model_validator(mode="after")
+            def validate_relation_owner(self):
+                calls.append(self)
+                return self
+
+        value = from_dict(
+            RelationOwner,
+            {
+                "selected": f"{__name__}.selected_pydantic_target",
+                "target_args": {"child": {"name": "nested", "count": "3"}},
+                "ordinary": "8",
+            },
+        )
+        self.assertEqual(value.kwargs, {"child": Child(name="nested", count=3)})
+        self.assertEqual(value.ordinary, 8)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(raw_values, ["8"])
+        self.assertEqual(
+            to_dict(value),
+            {
+                "target": f"{__name__}.selected_pydantic_target",
+                "kwargs": {"child": {"name": "nested", "count": 3}},
+                "ordinary": 8,
+            },
+        )
+
+        for alias in (AliasPath("target_args"), AliasChoices("target_args", "kwargs")):
+            with self.subTest(alias=alias):
+
+                class InvalidAliasOwner(BaseModel):
+                    target: Callable[..., Any] = selected_pydantic_target
+                    kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")] = Field(
+                        default_factory=dict,
+                        validation_alias=alias,
+                    )
+
+                with self.assertRaisesRegex(TypeError, "InvalidAliasOwner.kwargs.*string validation aliases"):
+                    fields_or_init_kwargs(InvalidAliasOwner)
 
     def test_pydantic_selected_target_parameters_round_trip_without_invocation(self):
         global selected_pydantic_target_calls
@@ -267,8 +371,12 @@ class PydanticSerializationTests(unittest.TestCase):
 
 class PydanticCliTests(unittest.TestCase):
     def setUp(self):
+        global pydantic_containing_factory_calls, pydantic_dynamic_owner_calls
         self.old_argv = sys.argv
         self.old_count = os.environ.pop("MSUP_PYDANTIC_COUNT", None)
+        pydantic_dynamic_owner_calls = 0
+        pydantic_containing_factory_calls = 0
+        pydantic_dynamic_raw_values.clear()
         pydantic_received.clear()
 
     def tearDown(self):
@@ -346,6 +454,46 @@ class PydanticCliTests(unittest.TestCase):
     def test_omitted_required_nested_model_raises_pydantic_error(self):
         with self.assertRaises(ValidationError):
             self.invoke(required_child_command, [])
+
+    def test_selected_target_pydantic_parameters_have_dotted_cli_options(self):
+        global selected_pydantic_target_calls
+        selected_pydantic_target_calls = 0
+        result = self.invoke(
+            selected_pydantic_target_command,
+            ["--kwargs.child.name", "nested", "--kwargs.child.count", "3"],
+        )
+        self.assertEqual(result.kwargs, {"child": Child(name="nested", count=3)})
+        self.assertEqual(selected_pydantic_target_calls, 0)
+
+    def test_dynamic_pydantic_owner_preserves_aliases_and_native_construction(self):
+        result = self.invoke(
+            pydantic_dynamic_owner_command,
+            [
+                "--Args",
+                (
+                    '{"selected": "tests.test_pydantic.selected_pydantic_target", '
+                    '"target_args": {"child": {"name": "nested", "count": "3"}}, "ordinary": "7"}'
+                ),
+            ],
+        )
+        self.assertEqual(result.kwargs, {"child": Child(name="nested", count=3)})
+        self.assertEqual(result.ordinary, 7)
+        self.assertEqual(pydantic_dynamic_owner_calls, 1)
+        self.assertEqual(pydantic_dynamic_raw_values, ["7"])
+
+    def test_complete_nested_pydantic_aliases_skip_the_containing_factory(self):
+        result = self.invoke(
+            pydantic_containing_owner_command,
+            [
+                "--job",
+                (
+                    '{"selected": "tests.test_pydantic.selected_pydantic_target", '
+                    '"target_args": {"child": {"name": "nested", "count": "3"}}, "ordinary": "7"}'
+                ),
+            ],
+        )
+        self.assertEqual(result.job.kwargs, {"child": Child(name="nested", count=3)})
+        self.assertEqual(pydantic_containing_factory_calls, 0)
 
 
 if __name__ == "__main__":

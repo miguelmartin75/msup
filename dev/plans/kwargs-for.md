@@ -16,7 +16,7 @@ documentation, examples, and runner changes do not count.
 
 - Phase 1: Complete
 - Phase 2: Complete
-- Phase 3: Not started
+- Phase 3: Complete
 - Phase 4: Not started
 - Phase 5: Not started
 
@@ -117,8 +117,9 @@ construction:
 - The selector exists, precedes the dependent field, is annotated as
   `Callable`, and is not itself a dependent relation field.
 - One selector has at most one dependent kwargs field.
-- Relation owners are dataclasses or direct functions and methods. Pydantic
-  model owners and regular class constructors reject the marker explicitly.
+- Relation owners may be dataclasses, Pydantic v2 models, regular class
+  constructors, or direct functions and methods. Pydantic v1 remains
+  unsupported.
 
 Python 3.12 creates a `typing.TypeAliasType` object for `Kwargs`.
 `get_origin(Kwargs)` does not expose the `dict` origin, so generic origin checks
@@ -277,10 +278,10 @@ path, but before pinning:
 
 - Skip a selector factory when any higher selector source exists. Evaluate it
   once when it is the only way to select a target.
-- Evaluate a dependent kwargs factory once for normal construction when its
-  baseline is the effective value or when a supplied mapping overlays that
-  baseline. Skip it when its optional containing owner is inactive or an
-  authoritative already-materialized owner supplies the dependent mapping.
+- Evaluate a dependent kwargs factory once only when it can supply a selected
+  parameter absent from higher mapping sources. Skip it when higher sources
+  cover every selected parameter, its optional containing owner is inactive,
+  or an authoritative already-materialized owner supplies the mapping.
 - Evaluate a containing owner factory once only when its projected fields are
   needed to fill leaves not supplied by a higher containing layer. A whole
   existing object makes that projection authoritative and suppresses the
@@ -308,13 +309,16 @@ tree. For an owner path it:
    its default or factory.
 5. Converts a dependent mapping from the cached selected parameter fields,
    injects the typed kwargs, and never rereads its default or factory.
-6. Returns a kwargs dictionary for a direct function owner, or constructs one
-   dataclass instance after all of its fields are ready.
+6. Returns a kwargs dictionary for a direct function owner, constructs a
+   dataclass or regular class once after all fields are ready, or calls
+   Pydantic v2 `model_validate` once with the typed relation values.
 
 This decoder is the only final CLI construction path for root and nested
-relation owners. It does not call public `from_kwargs`, because doing so would
-rematerialize defaults. It never invokes the selected target. Relation-free
-owners retain the current direct conversion path.
+relation owners. It reuses pure base helpers for cached selected-field
+conversion and final owner construction, but does not call public
+`from_kwargs`, because doing so would rematerialize defaults. It never invokes
+the selected target. Relation-free owners retain the current direct conversion
+path.
 
 Generated target options reuse existing long-option conversion, help,
 environment, secret, Enum, collection, and nested structured-model rules.
@@ -359,17 +363,17 @@ All schema, conversion, serialization, and CLI errors name the qualified owner
 path, dependent field, and parameter where applicable, for example
 `Job.kwargs.limits.memory_gb`. Reject missing selectors, non-callable selector
 values, non-mapping kwargs defaults or sources, unknown kwargs, missing
-required target parameters, unsupported signatures, option collisions, and
-unsupported nested dynamic relations before handler dispatch.
+required target parameters, unsupported signatures, and unsupported nested
+dynamic relations before handler dispatch. Generated options use argparse's
+configured conflict policy.
 
-Pydantic v2 owners containing `Metadata(kwargs_for=...)` are rejected before
-`model_validate` or serialization, rather than silently ignoring the marker.
-Regular class constructor owners follow the same rejection policy. Pydantic v1
-keeps its existing rejection. A Pydantic v2 model remains supported as an
-ordinary structured parameter of a selected target because existing conversion
-already constructs such parameters. Adding relation-owner support to Pydantic
-requires a later design that can preserve its native validation and dumping
-semantics symmetrically.
+Regular class owners use the same declared-order relation conversion as
+dataclasses and are constructed once after all fields are typed. Pydantic v2
+owners convert only their linked selector and dependent fields before calling
+`model_validate` exactly once, preserving native field and model validation for
+the complete object. Canonical field names and simple string validation aliases
+are supported for linked fields; reject complex alias paths or choices on a
+linked field with a qualified error. Pydantic v1 keeps its existing rejection.
 
 ## Concrete end-to-end example
 
@@ -532,9 +536,9 @@ approved the phase.
 - Assert the public `fields_or_init_kwargs` result contains the validated
   one-way kwargs relation link and that conversion behavior uses it. Do not
   expose or test an intermediate reflection pass.
-- Cover valid dataclass and direct-function pairs, duplicate metadata, wrong
-  dependent type, missing, self, forward, non-callable, reused, and relation
-  selectors, plus Pydantic and regular-class owner rejection.
+- Cover valid dataclass, direct-function, regular-class, and Pydantic v2 pairs,
+  plus duplicate metadata, wrong dependent type, missing, self, forward,
+  non-callable, reused, and relation selectors.
 - Cover both `Kwargs` and literal `dict[str, Any]` annotations under Python
   3.12.
 - Cover canonical nested qualified-name loading, identity-checked dumping, and
@@ -567,9 +571,9 @@ margin of the 1,110-line target (effective ceiling 1,221).
 
 1. Implement `kwargs_from_dict` and `from_kwargs` as direct declared-order
    field algorithms using `kwargs_relation`.
-2. Route dataclass `from_dict` and JSON conversion through the relation-aware
-   path. Keep direct functions non-invoking and keep ordinary class behavior
-   unchanged except for explicit marker rejection.
+2. Route dataclass and regular-class `from_dict` and JSON conversion through
+   the relation-aware path. Keep direct functions non-invoking. For Pydantic v2
+   owners, convert linked values once before one native `model_validate` call.
 3. Make `to_dict` and `to_json` relation-aware for dataclass objects and typed
    direct-function mappings. Validate and serialize dependent values against
    the selected target fields.
@@ -612,12 +616,12 @@ cumulative increase <= 156 lines
   and typed explicit kwargs without invocation.
 - Every relation factory is evaluated at most once per top-level operation and
   only when its default layer is needed.
-- Pydantic owner rejection and Pydantic selected-parameter support are both
-  explicit and tested.
+- Regular-class and Pydantic v2 relation owners, Pydantic selected parameters,
+  and the Pydantic v1 rejection are explicit and tested.
 
 ## Phase 3: Add target-specific options with two parser passes
 
-**Status:** Not started
+**Status:** Complete
 
 ### Implementation
 
@@ -639,9 +643,17 @@ cumulative increase <= 156 lines
    functions instead of building schema node or generated option classes.
 5. Run the one recursive final constructor over bootstrap-materialized values
    and pinned target maps. Dispatch only the declared command handler.
-6. Reject dynamic target parameter short aliases and detect long-option
-   collisions, positional or remainder conflicts, and nested dynamic relations
-   in selected structured parameters before final parsing.
+6. Reject dynamic target parameter short aliases, positional or remainder
+   conflicts, and nested dynamic relations in selected structured parameters
+   before final parsing. Let argparse apply its configured long-option conflict
+   policy when generated and static options collide.
+7. Reuse pure base selected-field conversion and owner-construction helpers so
+   CLI conversion does not duplicate unknown, missing, typing, or native class
+   construction behavior. Keep argparse, environment, precedence, and pinned
+   parse state in `msup.cli`.
+8. Support regular-class and Pydantic v2 relation owners at root and nested
+   paths without treating every arbitrary class annotation as a structured CLI
+   model.
 
 ### Tests
 
@@ -658,6 +670,8 @@ cumulative increase <= 156 lines
   required zero-call and one-call cases.
 - Cover source replacement of a default target before target-specific kwargs
   are converted.
+- Cover regular-class and Pydantic v2 relation owners, including native
+  Pydantic validation, simple aliases, and at-most-once construction.
 - Assert generated target parameters have qualified long options, reject their
   short aliases, and preserve existing static field short aliases.
 - Preserve all relation-free CLI and positional remainder tests.
@@ -668,6 +682,13 @@ cumulative increase <= 156 lines
 
 Run focused CLI and help tests, the full `./run.py test`,
 `./run.py type_check`, and `git diff --check`.
+
+Completed validation: `./run.py test` passed 97 tests; `./run.py check` passed
+type, lint, and format checks; `git diff --check` passed. Production code is
+1,443 lines (`msup/base.py` 741 and `msup/cli.py` 702), within the
+user-approved 10 percent ceiling of 1,445 lines. Separate correctness and
+code-guidelines reviews approved the final worktree and found no unnecessary
+validation.
 
 Enforce this cumulative production gate from enum after Phase 3:
 
@@ -698,9 +719,9 @@ cumulative increase <= 340 lines
 2. Qualify parser-generation and conversion failures with owner and parameter
    paths. Preserve argparse status 0 for help and status 2 for invalid option
    values.
-3. Enforce the remainder, option collision, dynamic-inside-dynamic, regular
-   class owner, and Pydantic owner boundaries consistently at every entry
-   point.
+3. Enforce the remainder, dynamic-inside-dynamic, Pydantic v1, and complex
+   linked-field alias boundaries consistently at every entry point. Verify
+   argparse's configured option-conflict behavior.
 4. Verify existing Enum, optional, collection, secret, short option, nested
    model, subcommand, and configuration behavior remains unchanged outside
    relations.
@@ -711,7 +732,8 @@ cumulative increase <= 340 lines
   expanded help selected from every selector source.
 - Cover `--help` ordering relative to selector and generated options.
 - Cover invalid import references, non-callables, signature failures, unknown
-  generated options, collisions, remainders, and nested dynamic relations.
+  generated options, argparse conflict handling, remainders, and nested dynamic
+  relations.
 - Run all existing baseline tests without weakening assertions.
 
 ### Validation
@@ -797,9 +819,10 @@ example's side-effect counter.
   of `fields_or_init_kwargs`.
 - No static field stores a runtime-selected callable or dynamic parameter
   schema, and there is no separate relation index or relation tree.
-- Dataclass and direct-function dictionary conversion, JSON conversion, and
-  serialization are symmetric and typed, evaluate needed defaults and
-  factories at most once, and never invoke or construct the selected target.
+- Dataclass, regular-class, Pydantic v2, and direct-function dictionary
+  conversion, JSON conversion, and serialization are symmetric and typed,
+  evaluate needed defaults and factories at most once, and never invoke or
+  construct the selected target.
 - The CLI uses one parser tree in two unchanged-argv passes to expose options
   such as `--kwargs.workers` and `--kwargs.limits.memory_gb` for the effective
   target.

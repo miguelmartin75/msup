@@ -545,12 +545,17 @@ class BasicTests(unittest.TestCase):
             (NonCallableSelector, "kwargs", "must be annotated as Callable"),
             (ReusedSelector, "second", "already has a kwargs field"),
             (RelationSelector, "other", "cannot be a kwargs field"),
-            (RegularRelationOwner, "kwargs", "only supported by dataclasses and functions"),
         ]
         for owner, field_name, message in cases:
             with self.subTest(owner=owner):
                 with self.assertRaisesRegex(TypeError, f"{owner.__name__}\\.{field_name}.*{message}"):
                     fields_or_init_kwargs(owner)
+        with self.assertRaisesRegex(TypeError, "WrongDependentType.kwargs.*Kwargs"):
+            from_dict(WrongDependentType, {})
+        value = from_dict(RegularRelationOwner, {"target": relation_target, "kwargs": {"value": "3"}})
+        self.assertIs(value.target, relation_target)
+        self.assertEqual(value.kwargs, {"value": 3})
+        self.assertEqual(from_json(RegularRelationOwner, s=to_json(value, indent=None)).kwargs, {"value": 3})
 
     def test_canonical_callable_references_support_qualified_names(self):
         reference = f"{__name__}.QualifiedCallable.nested"

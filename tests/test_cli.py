@@ -1,3 +1,4 @@
+import argparse
 from argparse import Namespace
 import os
 import sys
@@ -8,9 +9,11 @@ from dataclasses import FrozenInstanceError, dataclass, field
 from enum import Enum
 from io import StringIO
 from typing import Annotated, Any, Callable, Optional, cast
+from unittest.mock import patch
 
-from msup.base import Metadata
-from msup.cli import CliArg, _from_cli_args, argument_type, cli, strtobool
+import msup.base
+from msup.base import Kwargs, Metadata
+from msup.cli import CliArg, _add_target_args, _bootstrap_owner, _from_cli_args, argument_type, cli, strtobool
 
 
 received = []
@@ -161,9 +164,26 @@ class Choice(Enum):
     FIRST = "first"
 
 
+class RelationLookingChoice(Enum):
+    READY = "ready"
+
+    def __init__(
+        self,
+        value: str,
+        target: Callable[..., Any] = callback,
+        kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = {},
+    ) -> None:
+        pass
+
+
 @dataclass
 class EnumArgs:
     choice: Choice = Choice.FIRST
+
+
+@dataclass
+class RelationLookingEnumArgs:
+    choice: RelationLookingChoice = RelationLookingChoice.READY
 
 
 @dataclass
@@ -177,6 +197,126 @@ class CommandMetadataArgs:
     command_type: str
     command_fields: str
     _msup_command: str
+
+
+dynamic_target_calls = 0
+dynamic_factory_calls = {"target": 0, "kwargs": 0}
+dynamic_class_calls = 0
+regular_dynamic_owner_calls = 0
+containing_factory_calls = 0
+
+
+@dataclass
+class DynamicLimits:
+    memory_gb: int = 4
+
+
+def dynamic_target(
+    workers: Annotated[int, CliArg(env="MSUP_DYNAMIC_WORKERS")], limits: DynamicLimits, label: str = "target"
+):
+    global dynamic_target_calls
+    dynamic_target_calls += 1
+
+
+def replacement_dynamic_target(label: str = "replacement"):
+    global dynamic_target_calls
+    dynamic_target_calls += 1
+
+
+def dynamic_region(region: int) -> None:
+    pass
+
+
+class DynamicClassTarget:
+    def __init__(self, workers: int):
+        global dynamic_class_calls
+        dynamic_class_calls += 1
+
+
+class RegularDynamicArgs:
+    def __init__(
+        self,
+        target: Callable[..., Any] = dynamic_target,
+        kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = {},
+    ) -> None:
+        global regular_dynamic_owner_calls
+        regular_dynamic_owner_calls += 1
+        self.target = target
+        self.kwargs = kwargs
+
+
+def dynamic_target_factory() -> Callable[..., Any]:
+    dynamic_factory_calls["target"] += 1
+    return dynamic_target
+
+
+def dynamic_kwargs_factory() -> dict[str, Any]:
+    dynamic_factory_calls["kwargs"] += 1
+    return {"label": "factory"}
+
+
+@dataclass
+class DynamicArgs:
+    target: Callable[..., Any] = field(default_factory=dynamic_target_factory)
+    kwargs: Annotated[Kwargs, CliArg(kwargs_for="target", help="selected target arguments")] = field(
+        default_factory=dynamic_kwargs_factory
+    )
+    mode: Annotated[str, CliArg(short="m")] = "default"
+
+
+@dataclass
+class NestedDynamicArgs:
+    job: Annotated[DynamicArgs, CliArg(env="MSUP_DYNAMIC_JOB")] = field(default_factory=DynamicArgs)
+
+
+def containing_dynamic_factory() -> DynamicArgs:
+    global containing_factory_calls
+    containing_factory_calls += 1
+    return DynamicArgs(target=dynamic_target, kwargs={"workers": 1, "limits": DynamicLimits(2)}, mode="factory")
+
+
+@dataclass
+class FactoryNestedDynamicArgs:
+    job: DynamicArgs = field(default_factory=containing_dynamic_factory)
+
+
+@dataclass
+class MultipleDynamicArgs:
+    target: Callable[..., Any] = dynamic_target
+    kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = field(default_factory=dict)
+    region_target: Callable[..., Any] = dynamic_region
+    region_kwargs: Annotated[Kwargs, CliArg(kwargs_for="region_target")] = field(default_factory=dict)
+
+
+def dynamic_command(args: DynamicArgs):
+    received.append(args)
+
+
+def nested_dynamic_command(args: NestedDynamicArgs):
+    received.append(args)
+
+
+def factory_nested_dynamic_command(args: FactoryNestedDynamicArgs):
+    received.append(args)
+
+
+def multiple_dynamic_command(args: MultipleDynamicArgs):
+    received.append(args)
+
+
+def direct_dynamic_command(
+    target: Callable[..., Any] = dynamic_target,
+    kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = {},
+):
+    received.append((target, kwargs))
+
+
+def direct_nested_dynamic_command(label: str = "direct", job: DynamicArgs | None = None):
+    received.append((label, job))
+
+
+def regular_dynamic_command(args: RegularDynamicArgs):
+    received.append(args)
 
 
 def optional_list_command(args: OptionalListArgs):
@@ -275,6 +415,10 @@ def enum_command(args: EnumArgs):
     received.append(args)
 
 
+def relation_looking_enum_command(args: RelationLookingEnumArgs):
+    received.append(args)
+
+
 def subcommand(args: SubcommandArgs):
     received.append(args)
 
@@ -338,6 +482,7 @@ def direct_command_with_reserved_names(self: int, cls: str, count: int):
 
 class CliContractTests(unittest.TestCase):
     def setUp(self):
+        global containing_factory_calls, dynamic_class_calls, dynamic_target_calls, regular_dynamic_owner_calls
         self.old_argv = sys.argv
         self.old_selected = os.environ.pop("MSUP_TEST_SELECTED", None)
         self.old_enabled = os.environ.pop("MSUP_TEST_ENABLED", None)
@@ -345,6 +490,13 @@ class CliContractTests(unittest.TestCase):
         self.old_help_secret = os.environ.pop("MSUP_TEST_HELP_SECRET", None)
         self.old_child = os.environ.pop("MSUP_TEST_CHILD", None)
         self.old_direct_count = os.environ.pop("MSUP_TEST_DIRECT_COUNT", None)
+        self.old_dynamic_workers = os.environ.pop("MSUP_DYNAMIC_WORKERS", None)
+        self.old_dynamic_job = os.environ.pop("MSUP_DYNAMIC_JOB", None)
+        dynamic_target_calls = 0
+        dynamic_class_calls = 0
+        regular_dynamic_owner_calls = 0
+        containing_factory_calls = 0
+        dynamic_factory_calls.update(target=0, kwargs=0)
         received.clear()
 
     def tearDown(self):
@@ -373,6 +525,14 @@ class CliContractTests(unittest.TestCase):
             os.environ.pop("MSUP_TEST_DIRECT_COUNT", None)
         else:
             os.environ["MSUP_TEST_DIRECT_COUNT"] = self.old_direct_count
+        if self.old_dynamic_workers is None:
+            os.environ.pop("MSUP_DYNAMIC_WORKERS", None)
+        else:
+            os.environ["MSUP_DYNAMIC_WORKERS"] = self.old_dynamic_workers
+        if self.old_dynamic_job is None:
+            os.environ.pop("MSUP_DYNAMIC_JOB", None)
+        else:
+            os.environ["MSUP_DYNAMIC_JOB"] = self.old_dynamic_job
         received.clear()
 
     def invoke(self, command, argv, **kwargs):
@@ -443,6 +603,336 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(result.values, {"one": 1})
         self.assertEqual(result.child, ChildArgs(count=4))
         self.assertIs(result.transform, callback)
+
+    def test_selected_target_options_are_typed_without_invoking_the_target(self):
+        result = self.invoke(
+            dynamic_command,
+            ["--kwargs", '{"limits": {"memory_gb": "12"}}', "--kwargs.workers", "6", "--kwargs.limits.memory_gb", "24"],
+        )
+        self.assertIs(result.target, dynamic_target)
+        self.assertEqual(result.kwargs, {"workers": 6, "limits": DynamicLimits(memory_gb=24), "label": "factory"})
+        self.assertEqual(dynamic_factory_calls, {"target": 1, "kwargs": 1})
+        self.assertEqual(dynamic_target_calls, 0)
+
+    def test_selected_target_sources_replace_defaults_in_precedence_order(self):
+        os.environ["MSUP_DYNAMIC_WORKERS"] = "4"
+        result = self.invoke(
+            dynamic_command,
+            [
+                "--Args",
+                '{"kwargs": {"workers": 2, "limits": {"memory_gb": 3}}}',
+                "--kwargs.workers",
+                "6",
+            ],
+        )
+        self.assertEqual(result.kwargs, {"workers": 6, "limits": DynamicLimits(3), "label": "factory"})
+
+        result = self.invoke(
+            dynamic_command,
+            [
+                "--Args",
+                f'{{"target": "{__name__}.replacement_dynamic_target", "kwargs": {{"label": "config"}}}}',
+            ],
+        )
+        self.assertIs(result.target, replacement_dynamic_target)
+        self.assertEqual(result.kwargs, {"label": "config"})
+        self.assertEqual(dynamic_factory_calls, {"target": 1, "kwargs": 1})
+        self.assertEqual(dynamic_target_calls, 0)
+
+    def test_nested_default_owner_is_projected_once_before_dynamic_options(self):
+        os.environ["MSUP_DYNAMIC_WORKERS"] = "5"
+        result = self.invoke(nested_dynamic_command, ["--job.kwargs.limits.memory_gb", "9"])
+        self.assertEqual(result.job.kwargs, {"workers": 5, "limits": DynamicLimits(9), "label": "factory"})
+        self.assertEqual(dynamic_factory_calls, {"target": 1, "kwargs": 1})
+        self.assertEqual(dynamic_target_calls, 0)
+
+    def test_nested_sources_overlay_defaults_configuration_environment_and_json_files(self):
+        reference = f"{__name__}.dynamic_target"
+        os.environ["MSUP_DYNAMIC_JOB"] = (
+            f'{{"target": "{reference}", "kwargs": {{"workers": 4, "limits": {{"memory_gb": 4}}}}}}'
+        )
+        os.environ["MSUP_DYNAMIC_WORKERS"] = "6"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as source:
+            source.write(f'{{"target": "{reference}", "kwargs": {{"workers": 5, "limits": {{"memory_gb": 5}}}}}}')
+            source_path = source.name
+        try:
+            result = self.invoke(
+                nested_dynamic_command,
+                [
+                    "--Args",
+                    f'{{"job": {{"target": "{reference}", "kwargs": {{"workers": 3, "limits": {{"memory_gb": 3}}}}}}}}',
+                    "--job",
+                    source_path,
+                    "--job.kwargs.workers",
+                    "7",
+                ],
+            )
+        finally:
+            os.unlink(source_path)
+        self.assertEqual(result.job.kwargs, {"workers": 7, "limits": DynamicLimits(5), "label": "factory"})
+        self.assertEqual(dynamic_factory_calls, {"target": 1, "kwargs": 1})
+
+    def test_complete_containing_sources_skip_its_factory_while_partial_sources_materialize_it(self):
+        global containing_factory_calls
+        reference = f"{__name__}.dynamic_target"
+        result = self.invoke(
+            factory_nested_dynamic_command,
+            [
+                "--job",
+                (
+                    f'{{"target": "{reference}", "kwargs": {{"workers": 3, '
+                    '"limits": {"memory_gb": 4}}, "mode": "whole"}'
+                ),
+            ],
+        )
+        self.assertEqual(result.job.mode, "whole")
+        self.assertEqual(containing_factory_calls, 0)
+
+        result = self.invoke(
+            factory_nested_dynamic_command,
+            [
+                "--job",
+                f'{{"target": "{reference}", "kwargs": {{"workers": 3, "limits": {{"memory_gb": 4}}}}}}',
+                "--job.mode",
+                "dotted",
+            ],
+        )
+        self.assertEqual(result.job.mode, "dotted")
+        self.assertEqual(containing_factory_calls, 0)
+
+        result = self.invoke(
+            factory_nested_dynamic_command,
+            ["--job", '{"kwargs": {"workers": 3}}', "--job.kwargs.limits.memory_gb", "4"],
+        )
+        self.assertEqual(result.job.kwargs, {"workers": 3, "limits": DynamicLimits(4)})
+        self.assertEqual(result.job.mode, "factory")
+        self.assertEqual(containing_factory_calls, 1)
+
+        containing_factory_calls = 0
+        raw_trees = {}
+        targets = {}
+        target_fields = {}
+        _bootstrap_owner(
+            FactoryNestedDynamicArgs,
+            Namespace(),
+            {"job": DynamicArgs(target=dynamic_target, kwargs={"workers": 3, "limits": DynamicLimits(4)})},
+            (),
+            raw_trees,
+            targets,
+            target_fields,
+        )
+        self.assertEqual(containing_factory_calls, 0)
+        self.assertIn(("job", "kwargs"), target_fields)
+
+    def test_direct_handlers_and_classes_keep_selected_targets_uninvoked(self):
+        target, kwargs = self.invoke(
+            direct_dynamic_command,
+            ["--kwargs.workers", "3", "--kwargs.limits.memory_gb", "8"],
+        )
+        self.assertIs(target, dynamic_target)
+        self.assertEqual(kwargs, {"workers": 3, "limits": DynamicLimits(8)})
+        self.assertEqual(dynamic_target_calls, 0)
+
+        result = self.invoke(
+            dynamic_command,
+            ["--target", f"{__name__}.DynamicClassTarget", "--kwargs.workers", "7"],
+        )
+        self.assertIs(result.target, DynamicClassTarget)
+        self.assertEqual(result.kwargs, {"workers": 7})
+        self.assertEqual(dynamic_class_calls, 0)
+
+    def test_dynamic_direct_and_regular_class_owners_use_generated_and_static_options(self):
+        label, job = self.invoke(
+            direct_nested_dynamic_command,
+            [
+                "--job.target",
+                f"{__name__}.dynamic_target",
+                "--job.kwargs.workers",
+                "3",
+                "--job.kwargs.limits.memory_gb",
+                "8",
+                "-job.m",
+                "fast",
+            ],
+        )
+        self.assertEqual(label, "direct")
+        self.assertEqual(job.kwargs, {"workers": 3, "limits": DynamicLimits(8), "label": "factory"})
+        self.assertEqual(job.mode, "fast")
+
+        result = self.invoke(regular_dynamic_command, ["--kwargs.workers", "6", "--kwargs.limits.memory_gb", "7"])
+        self.assertEqual(result.kwargs, {"workers": 6, "limits": DynamicLimits(7)})
+        self.assertEqual(regular_dynamic_owner_calls, 1)
+        self.assertEqual(dynamic_target_calls, 0)
+
+    def test_multiple_relations_keep_independent_selected_target_paths(self):
+        result = self.invoke(
+            multiple_dynamic_command,
+            [
+                "--kwargs.workers",
+                "2",
+                "--kwargs.limits.memory_gb",
+                "6",
+                "--region_kwargs.region",
+                "9",
+            ],
+        )
+        self.assertEqual(result.kwargs, {"workers": 2, "limits": DynamicLimits(6)})
+        self.assertEqual(result.region_kwargs, {"region": 9})
+
+    def test_dynamic_selector_resolution_and_layout_failures_are_qualified(self):
+        reference = f"{__name__}.dynamic_target"
+        with patch.object(msup.base, "load_callable", wraps=msup.base.load_callable) as load:
+            self.invoke(
+                dynamic_command, ["--target", reference, "--kwargs.workers", "3", "--kwargs.limits.memory_gb", "4"]
+            )
+        load.assert_called_once_with(reference)
+
+        @dataclass
+        class MissingSelectorArgs:
+            target: Callable[..., Any]
+            kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = field(default_factory=dict)
+
+        def missing_selector_command(args: MissingSelectorArgs):
+            pass
+
+        with self.assertRaisesRegex(TypeError, "kwargs: missing selector 'target'"):
+            self.invoke(missing_selector_command, [])
+
+        def invalid_target(value):
+            pass
+
+        @dataclass
+        class InvalidTargetArgs:
+            target: Callable[..., Any] = invalid_target
+            kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = field(default_factory=dict)
+
+        def invalid_target_command(args: InvalidTargetArgs):
+            pass
+
+        with self.assertRaisesRegex(TypeError, "kwargs: value: selected target parameters must have an annotation"):
+            self.invoke(invalid_target_command, [])
+        with self.assertRaisesRegex(TypeError, "pos_arg_config"):
+            self.invoke(dynamic_command, [], pos_arg_config=True)
+
+        def required_direct_command(
+            name: int | None,
+            target: Callable[..., Any] = dynamic_target,
+            kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = {},
+        ):
+            pass
+
+        class RequiredRegularArgs:
+            def __init__(
+                self,
+                name: int | None,
+                target: Callable[..., Any] = dynamic_target,
+                kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = {},
+            ) -> None:
+                self.name = name
+                self.target = target
+                self.kwargs = kwargs
+
+        def required_regular_command(args: RequiredRegularArgs):
+            pass
+
+        @dataclass
+        class RequiredOptionalArgs:
+            value: int | None
+
+        @dataclass
+        class RequiredOptionalDynamicArgs:
+            job: DynamicArgs | None
+
+        def required_optional_command(args: RequiredOptionalArgs):
+            pass
+
+        def required_optional_dynamic_command(args: RequiredOptionalDynamicArgs):
+            pass
+
+        output = StringIO()
+        with redirect_stderr(output), self.assertRaises(SystemExit) as error:
+            self.invoke(required_direct_command, [])
+        self.assertEqual(error.exception.code, 3)
+        self.assertIn("--name", output.getvalue())
+        output = StringIO()
+        with redirect_stderr(output), self.assertRaises(SystemExit) as error:
+            self.invoke(required_regular_command, [])
+        self.assertEqual(error.exception.code, 3)
+        self.assertIn("--name", output.getvalue())
+        output = StringIO()
+        with redirect_stderr(output), self.assertRaises(SystemExit) as error:
+            self.invoke(required_optional_command, [])
+        self.assertEqual(error.exception.code, 3)
+        self.assertIn("--value", output.getvalue())
+        output = StringIO()
+        with redirect_stderr(output), self.assertRaises(SystemExit) as error:
+            self.invoke(required_optional_dynamic_command, [])
+        self.assertEqual(error.exception.code, 3)
+        self.assertIn("--job", output.getvalue())
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--kwargs.workers")
+        with self.assertRaises(argparse.ArgumentError):
+            _add_target_args(parser, msup.base.selected_target_fields(dynamic_target), ("kwargs",))
+        parser = argparse.ArgumentParser(conflict_handler="resolve")
+        parser.add_argument("--kwargs.workers")
+        _add_target_args(parser, msup.base.selected_target_fields(dynamic_target), ("kwargs",))
+        self.assertEqual(parser.parse_args(["--kwargs.workers", "4"]).__dict__["kwargs.workers"], 4)
+
+    def test_selected_target_help_materializes_only_the_selector(self):
+        sys.argv = ["program", "--help"]
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as error:
+            cli(dynamic_command)
+        self.assertEqual(error.exception.code, 0)
+        self.assertIn("--kwargs.workers", output.getvalue())
+        self.assertEqual(dynamic_factory_calls, {"target": 1, "kwargs": 0})
+
+    def test_dynamic_subcommands_select_and_dispatch_only_the_handler(self):
+        sys.argv = ["program", "dynamic_command", "--kwargs.workers", "4", "--kwargs.limits.memory_gb", "5"]
+        cli({dynamic_command: "dynamic command"})
+        result = received.pop()
+        self.assertEqual(result.kwargs, {"workers": 4, "limits": DynamicLimits(5), "label": "factory"})
+        self.assertEqual(dynamic_target_calls, 0)
+
+    def test_dynamic_option_boundaries_reject_short_remainder_and_nested_relations(self):
+        def short_target(value: Annotated[int, CliArg(short="v")]):
+            pass
+
+        @dataclass
+        class ShortTargetArgs:
+            target: Callable[..., Any] = short_target
+            kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = field(default_factory=dict)
+
+        @dataclass
+        class RemainderTargetArgs:
+            target: Callable[..., Any] = dynamic_target
+            kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = field(default_factory=dict)
+            extra: Annotated[list[str], CliArg(pos=True, opt=False)] = field(default_factory=list)
+
+        def nested_target(child: DynamicArgs):
+            pass
+
+        @dataclass
+        class NestedTargetArgs:
+            target: Callable[..., Any] = nested_target
+            kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = field(default_factory=dict)
+
+        def short_target_command(args: ShortTargetArgs):
+            pass
+
+        def remainder_target_command(args: RemainderTargetArgs):
+            pass
+
+        def nested_target_command(args: NestedTargetArgs):
+            pass
+
+        with self.assertRaisesRegex(TypeError, "kwargs.value.*short"):
+            cli(short_target_command)
+        with self.assertRaisesRegex(TypeError, "extra.*positional"):
+            cli(remainder_target_command)
+        with self.assertRaisesRegex(TypeError, "kwargs.child.*cannot contain"):
+            cli(nested_target_command)
 
     def test_any_is_parsed_as_a_string(self):
         self.assertEqual(self.invoke(any_command, ["--value", "41"]), AnyArgs(value="41"))
@@ -769,6 +1259,10 @@ class CliContractTests(unittest.TestCase):
 
     def test_enum_arguments_accept_member_values_and_reject_invalid_values(self):
         self.assertEqual(self.invoke(enum_command, ["--choice", "first"]), EnumArgs(Choice.FIRST))
+        self.assertEqual(
+            self.invoke(relation_looking_enum_command, ["--choice", "ready"]),
+            RelationLookingEnumArgs(RelationLookingChoice.READY),
+        )
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as error:
             self.invoke(enum_command, ["--choice", "missing"])
         self.assertEqual(error.exception.code, 2)

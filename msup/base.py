@@ -169,7 +169,9 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
     elif is_pydantic_model(target):
         hints = get_type_hints(target, include_extras=True)
         for name, model_field in cast(Any, target).model_fields.items():
-            default = MISSING if model_field.is_required() else model_field.default
+            default = (
+                MISSING if model_field.is_required() or model_field.default_factory is not None else model_field.default
+            )
             default_factory = model_field.default_factory if model_field.default_factory is not None else MISSING
             annotation, annotations = unwrap_annotated(hints.get(name, model_field.annotation))
             result.append(FieldSpec(name, annotation, annotations, default, default_factory))
@@ -187,7 +189,6 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
                 annotation = None
             result.append(FieldSpec(name, annotation, annotations, default, MISSING))
 
-    supports_relations = is_dataclass(target) or is_function_or_method
     owner_name = target.__qualname__
     linked_selectors: set[str] = set()
     indexed_fields = {field.name: (index, field) for index, field in enumerate(result)}
@@ -196,8 +197,6 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
         metadata = metadata_from_annotations(field.annotations, field_name)
         if metadata is None or metadata.kwargs_for is None:
             continue
-        if not supports_relations:
-            raise TypeError(f"{field_name}: kwargs_for is only supported by dataclasses and functions")
         relation_name = metadata.kwargs_for
         relation_annotation = normalize_annotation(field.annotation)
         if get_origin(relation_annotation) is not dict or get_args(relation_annotation) != (str, Any):
@@ -218,6 +217,12 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
             raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} already has a kwargs field")
         field.kwargs_relation = selector
         linked_selectors.add(relation_name)
+    if is_pydantic_model(target):
+        for field in result:
+            if field.kwargs_relation is not None or field.name in linked_selectors:
+                alias = cast(Any, target).model_fields[field.name].validation_alias
+                if alias is not None and not isinstance(alias, str):
+                    raise TypeError(f"{owner_name}.{field.name}: kwargs_for only supports string validation aliases")
     return result
 
 
@@ -556,7 +561,10 @@ def _to_dict_value(value: Any, annotation: Any, field_name: str) -> Any:
     annotation = get_optional_type(annotation) or normalize_annotation(annotation)
     if annotation_origin(annotation) in (Union, UnionType):
         annotation = union_member(annotation, type(value), field_name)
-    if is_structured_model(annotation):
+    if is_structured_model(annotation) or (
+        inspect.isclass(annotation)
+        and any(field.kwargs_relation is not None for field in fields_or_init_kwargs(annotation))
+    ):
         return _to_dict(value, None, field_name)
     return to_dict_value(value, annotation)
 
@@ -605,17 +613,9 @@ def to_kwargs(clazz: type | Callable[..., Any], x: Any) -> dict[str, Any]:
     return result
 
 
-def kwargs_from_dict(
-    target: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str = "kwargs"
-) -> dict[str, Any]:
-    """Converts a selected target's explicit kwargs without invoking the target."""
-
+def _kwargs_from_fields(parameters: list[FieldSpec], values: Mapping[str, Any], field_name: str) -> dict[str, Any]:
     if not isinstance(values, Mapping):
         raise TypeError(f"{field_name}: expected a mapping, got {type(values)}")
-    try:
-        parameters = selected_target_fields(target)
-    except TypeError as error:
-        raise TypeError(f"{field_name}: {error}") from error
     unknown = next((name for name in values if name not in {parameter.name for parameter in parameters}), None)
     if unknown is not None:
         raise TypeError(f"{field_name}.{unknown}: unknown target parameter")
@@ -631,19 +631,51 @@ def kwargs_from_dict(
     return result
 
 
+def kwargs_from_dict(
+    target: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str = "kwargs"
+) -> dict[str, Any]:
+    """Converts a selected target's explicit kwargs without invoking the target."""
+
+    try:
+        parameters = selected_target_fields(target)
+    except TypeError as error:
+        raise TypeError(f"{field_name}: {error}") from error
+    return _kwargs_from_fields(parameters, values, field_name)
+
+
+def _construct_owner(owner: type, values: Mapping[str, Any]) -> Any:
+    if is_pydantic_model(owner):
+        result = dict(values)
+        fields = fields_or_init_kwargs(owner)
+        for field in fields:
+            if field.kwargs_relation is not None or any(item.kwargs_relation is field for item in fields):
+                alias = cast(Any, owner).model_fields[field.name].validation_alias
+                if isinstance(alias, str) and field.name in result:
+                    result[alias] = result.pop(field.name)
+        result = cast(Any, owner).model_validate(result)
+    else:
+        result = owner(**values)
+    return result
+
+
 def _from_kwargs(owner: type | Callable[..., Any], values: Mapping[str, Any], owner_name: str) -> dict[str, Any]:
     if not isinstance(values, Mapping):
         raise TypeError(f"{owner.__qualname__}: expected a mapping, got {type(values)}")
-    result = {}
     field_info = fields_or_init_kwargs(owner)
+    pydantic_owner = is_pydantic_model(owner)
+    result = dict(values) if pydantic_owner else {}
     for f in field_info:
         dependent = next((field for field in field_info if field.kwargs_relation is f), None)
         field_name = f"{owner_name}.{f.name}"
         if f.kwargs_relation is not None:
-            supplied = values.get(f.name, {})
+            supplied = values.get(f.name, MISSING)
+            if supplied is MISSING and pydantic_owner:
+                alias = cast(Any, owner).model_fields[f.name].validation_alias
+                supplied = values.get(alias, MISSING) if isinstance(alias, str) else MISSING
+            supplied = {} if supplied is MISSING else supplied
             if not isinstance(supplied, Mapping):
                 raise TypeError(f"{field_name}: expected a mapping, got {type(supplied)}")
-            target = cast(Any, result[f.kwargs_relation.name])
+            target = result[f.kwargs_relation.name]
             try:
                 parameters = selected_target_fields(target)
             except TypeError as error:
@@ -657,18 +689,30 @@ def _from_kwargs(owner: type | Callable[..., Any], values: Mapping[str, Any], ow
                 default = {}
             if not isinstance(default, Mapping):
                 raise TypeError(f"{field_name}: expected a mapping default, got {type(default)}")
-            result[f.name] = kwargs_from_dict(target, {**default, **supplied}, field_name=field_name)
-        elif f.name in values:
-            value = values[f.name]
-            result[f.name] = from_dict_value(value, f.annotation or type(value), type(value), field_name)
+            result[f.name] = _kwargs_from_fields(parameters, {**default, **supplied}, field_name)
         elif dependent is not None:
-            if f.default is not MISSING:
-                value = deepcopy(f.default)
+            value = values.get(f.name, MISSING)
+            if value is MISSING and pydantic_owner:
+                alias = cast(Any, owner).model_fields[f.name].validation_alias
+                value = values.get(alias, MISSING) if isinstance(alias, str) else MISSING
+            if value is not MISSING:
+                result[f.name] = from_dict_value(value, f.annotation or type(value), type(value), field_name)
+            elif f.default is not MISSING:
+                result[f.name] = from_dict_value(deepcopy(f.default), f.annotation, type(f.default), field_name)
             elif f.default_factory is not MISSING:
                 value = f.default_factory()
+                result[f.name] = from_dict_value(value, f.annotation, type(value), field_name)
             else:
                 raise TypeError(f"{field_name}: missing selector for {dependent.name!r}")
-            result[f.name] = from_dict_value(value, f.annotation or type(value), type(value), field_name)
+        elif (value := values.get(f.name, MISSING)) is not MISSING:
+            field_type = get_optional_type(f.annotation) or normalize_annotation(f.annotation) or type(value)
+            if inspect.isclass(field_type) and any(
+                field.kwargs_relation is not None for field in fields_or_init_kwargs(field_type)
+            ):
+                raw = dict_from_str(value) if isinstance(value, str) else value
+                result[f.name] = _construct_owner(field_type, _from_kwargs(field_type, raw, field_name))
+            elif not pydantic_owner:
+                result[f.name] = from_dict_value(value, f.annotation or field_type, type(value), field_name)
     return result
 
 
@@ -679,7 +723,9 @@ def from_kwargs(owner: type | Callable[..., Any], values: Mapping[str, Any]) -> 
 
 
 def from_dict(clazz: type[T], x: dict[Any, Any]) -> T:
-    if is_dataclass(clazz):
+    if any(field.kwargs_relation is not None for field in fields_or_init_kwargs(clazz)):
+        result = _construct_owner(clazz, _from_kwargs(clazz, x, clazz.__qualname__))
+    elif is_dataclass(clazz):
         result = clazz(**_from_kwargs(clazz, x, clazz.__qualname__))
     elif is_pydantic_model(clazz):
         fields_or_init_kwargs(clazz)
