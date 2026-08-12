@@ -4,9 +4,10 @@
 
 - Phase 1: Complete
 - Phase 2: Complete
-- Phase 3: Not started
+- Phase 3: Complete
 - Phase 4: Not started
 - Phase 5: Not started
+- Phase 6: Not started
 
 Update each phase to `In progress`, `Complete`, or `Blocked` while executing it.
 Record the exact validation command and result beneath every completed phase.
@@ -29,6 +30,25 @@ After every correctness-review cycle, inspect the production LOC delta and
 apply accepted behavior-preserving simplifications before completing the
 phase. The final combined LOC of `msup/base.py` and `msup/cli.py` must be lower
 than the 1,443-line pre-follow-up state at commit `4e89338`.
+
+## User design constraints
+
+Retain these comments as explicit acceptance constraints:
+
+- "You've lost the plot if you think this is acceptable. `from_kwargs` has a
+  lot of unnecessary complexity."
+- "why is `to_dict` not as simple as it was before, but slightly modified?"
+- Use `inspect.signature` through selected-target reflection only after the
+  runtime selector value is known, and inspect each selected callable once.
+- Apply the baseline field-loop plus the smallest relation-specific branch to
+  `to_dict`, `from_kwargs`, and analogous consumers.
+- `validation_value`, `validation_paths`, and `set_validation_value` are design
+  red flags. Remove them rather than moving Pydantic alias traversal into
+  `FieldSpec`; native alias handling must stay narrowly scoped to active
+  relation fields.
+- Production LOC reduction must come from simpler algorithms and deleted
+  state, not compressed forward declarations, deleted useful docstrings, or
+  formatting changes.
 
 ## Code map
 
@@ -71,7 +91,7 @@ than the 1,443-line pre-follow-up state at commit `4e89338`.
 
 ## Phase 1: Simplify base reflection and restore unrelated helpers
 
-**Status:** Not started
+**Status:** Complete
 
 1. In `msup/base.py:fields_or_init_kwargs`, retain the completed first pass
    that builds all `FieldSpec` values. Replace `indexed_fields`,
@@ -113,13 +133,13 @@ from `abca9b07` are removed without changing their baseline behavior.
 -k 'not kwargs_relation_schemas_reject_invalid_links'` passed with 25 tests
 and 1 deselected; `uv run --group dev --extra pydantic ty check msup`,
 `./run.py lint_check`, and `./run.py format_check` passed. `./run.py check`
-reached the known Phase 4 test import of `msup.cli.strtobool` and stopped with
+reached the known Phase 5 test import of `msup.cli.strtobool` and stopped with
 one type diagnostic because that test has not yet moved to public
 `msup.base.str_to_bool`.
 
 ## Phase 2: Inline base relation conversion and serialization
 
-**Status:** Not started
+**Status:** Complete
 
 1. Delete `_kwargs_from_fields`. Inline selected-parameter unknown-key,
    required-key, and conversion logic into `kwargs_from_dict`, into
@@ -173,7 +193,7 @@ Phase 3's CLI pipeline removal.
 
 ## Phase 3: Restore the ordinary CLI flow and isolate relation parsing
 
-**Status:** Not started
+**Status:** Complete
 
 1. Remove `_RAW_MATERIALIZED`, `_is_dynamic_owner`, `_field_sources`,
    `_has_descendant_source`, `_source_tree`, and the current broad dynamic-owner
@@ -234,7 +254,61 @@ run at most once and only when needed; nested relations, native Pydantic
 aliases, active-subcommand isolation, static and expanded help, and `--Args`
 work; and CLI conversion never constructs or invokes selected targets.
 
-## Phase 4: Align and minimize tests
+**Validation:** the import-only compatibility-shim run of `tests/test_cli.py`
+passed 55 public behavior tests and 22 subtests; the sole failure was the
+intentionally dummy `_bootstrap_owner` assertion removed in Phase 5. Focused
+base validation passed 25 tests and 17 subtests with the stale schema test
+deselected. Pydantic validation passed 18 current-contract tests; only two
+stale Phase 5 negative assertions expecting `AliasPath` and `AliasChoices`
+rejection remained. `uv run --group dev --extra pydantic ty check msup`,
+`./run.py lint_check`, `./run.py format_check`, and `git diff --check` passed.
+Correctness review confirmed selected signatures and required factories are
+evaluated once, selected targets remain uninvoked, and all prior CLI findings
+are resolved. The post-review simplification removed unused parser-cache owner
+state and duplicate root reflection. Combined production LOC is 1,441.
+
+## Phase 4: Reduce base consumers to baseline-shaped relation branches
+
+**Status:** Not started
+
+1. Simplify `to_dict` to the `abca9b07` field loop and value lookup shape.
+   Ordinary fields delegate directly to `to_dict_value`; the only ordinary
+   deviation may preserve a containing diagnostic path for an already
+   structured runtime value. A dependent relation branch reads its runtime
+   selector, reflects the selected signature exactly once, and converts and
+   serializes supplied parameters in one loop without invoking the target.
+2. Redesign `from_kwargs` as a declaration-order baseline conversion loop with
+   relation-only branches. Do not resolve validation aliases for every field,
+   do not maintain a general parallel converted-field map, and do not perform
+   owner-wide topology traversal. Leave ordinary Pydantic inputs untouched for
+   one native `model_validate` call. Convert ordinary non-Pydantic values with
+   the existing direct `from_dict_value` path.
+3. Resolve selectors only when a dependent relation needs them. Cache only
+   runtime selector values or selected signatures that are reused by multiple
+   dependents. Preserve lazy defaults and factories, independent mappings for
+   multiple dependents, nested relation owners, full diagnostic paths, and
+   target non-invocation.
+4. Remove `FieldSpec.validation_paths`, `FieldSpec.validation_value`, and
+   `FieldSpec.set_validation_value`. Implement only the Pydantic alias
+   read/write behavior required for active selector, dependent, and nested
+   relation fields. Support string aliases, `AliasPath`, and ordered
+   `AliasChoices` without creating a general field-input framework.
+5. Simplify `from_dict` and CLI integration after the base loop is reduced so
+   they do not reconstruct reflection work or shift the removed complexity to
+   another layer. Re-run the public CLI behavior suite and Pydantic alias
+   probes after removing the `FieldSpec` alias state.
+6. Run a correctness review and a separate simplification review. Measure
+   semantic production LOC with public documentation and readable declarations
+   intact.
+
+**Success criteria:** `to_dict` and `from_kwargs` visibly follow their baseline
+field loops with small relation branches; the three validation-path
+declarations are absent; ordinary Pydantic fields remain native; selected
+targets are inspected once and never invoked; all relation, alias, laziness,
+round-trip, and CLI behavior remains intact; and production LOC remains below
+1,443 without cosmetic compression.
+
+## Phase 5: Align and minimize tests
 
 **Status:** Not started
 
@@ -272,7 +346,7 @@ work; and CLI conversion never constructs or invokes selected targets.
 names, and all relation invariants are covered with the smallest useful set of
 cases.
 
-## Phase 5: Validate and review the final diff
+## Phase 6: Validate and review the final diff
 
 **Status:** Not started
 
