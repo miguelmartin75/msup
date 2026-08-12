@@ -22,6 +22,7 @@ from msup.base import (
     is_structured_model,
     metadata_from_annotations,
     selected_target_fields,
+    str2bool,
     to_kwargs,
 )
 
@@ -45,17 +46,6 @@ class CliArg(Metadata):
 def cliarg_from_annotations(annotations: list[Any]) -> CliArg | None:
     metadata = metadata_from_annotations(annotations)
     result = metadata if isinstance(metadata, CliArg) else None
-    return result
-
-
-def strtobool(value: str) -> bool:
-    value = value.lower()
-    if value in ("y", "yes", "on", "1", "true", "t"):
-        result = True
-    elif value in ("n", "no", "off", "0", "false", "f"):
-        result = False
-    else:
-        raise ValueError(f"Invalid truth value {value!r}")
     return result
 
 
@@ -129,7 +119,7 @@ def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], An
     elif annotation in (str, int, float):
         result = annotation
     elif annotation is bool:
-        result = strtobool
+        result = str2bool
     elif enum_type(annotation) is not None:
         result = enum_argument_type(annotation, field_name)
     else:
@@ -151,7 +141,7 @@ def _add_argument(parser, args, kwargs, annotation, field_name, help_text, posit
         if not positional:
             kwargs["nargs"] = "?"
             kwargs["const"] = True
-        kwargs["type"] = strtobool
+        kwargs["type"] = str2bool
         kwargs["metavar"] = "{0|1,true|false,yes|no}"
     elif (enum_class := enum_type(field_type)) is not None:
         kwargs["type"] = enum_argument_type(field_type, field_name)
@@ -451,14 +441,14 @@ def _bootstrap_owner(owner, args, config, path, raw_trees, targets, target_field
         name = ".".join(field_path)
         field_type = effective_type(field.annotation, name)
         sources = _field_sources(field, args, config, name)
-        dependent = next((item for item in fields if item.kwargs_relation is field), None)
+        dependents = [item for item in fields if item.kwargs_relation is field]
         if field.kwargs_relation is not None:
             values: dict[str, Any] = {}
             for source in sources:
                 values = _merge_mappings(values, _mapping_value(source, name))
             if sources:
                 result[field.name] = values
-        elif dependent is not None:
+        elif dependents:
             try:
                 value = sources[-1] if sources else _default_value(field)
                 if value is MISSING:
@@ -468,9 +458,11 @@ def _bootstrap_owner(owner, args, config, path, raw_trees, targets, target_field
                 raise TypeError(f"{name}: {error}") from error
             targets[field_path] = target
             try:
-                target_fields[(*path, dependent.name)] = selected_target_fields(target)
+                parameters = selected_target_fields(target)
             except TypeError as error:
-                raise TypeError(f"{'.'.join((*path, dependent.name))}: {error}") from error
+                raise TypeError(f"{'.'.join((*path, dependents[0].name))}: {error}") from error
+            for dependent in dependents:
+                target_fields[(*path, dependent.name)] = parameters
             result[field.name] = value
         elif _is_dynamic_owner(field_type):
             nested_config: dict[str, Any] = {}
@@ -546,7 +538,7 @@ def _construct_dynamic_owner(owner, path, raw_trees, targets, target_fields, arg
         field_path = (*path, field.name)
         name = ".".join(field_path)
         field_type = effective_type(field.annotation, name)
-        dependent = next((item for item in fields if item.kwargs_relation is field), None)
+        dependents = [item for item in fields if item.kwargs_relation is field]
         if field.kwargs_relation is not None:
             if field_path not in target_fields:
                 raise TypeError(f"{name}: missing selector {field.kwargs_relation.name!r}")
@@ -562,7 +554,7 @@ def _construct_dynamic_owner(owner, path, raw_trees, targets, target_fields, arg
                 if default is not MISSING:
                     values = _merge_mappings(_mapping_value(default, name), values)
             result[field.name] = _kwargs_from_fields(parameters, values, name)
-        elif dependent is not None:
+        elif dependents:
             if field_path in targets:
                 result[field.name] = targets[field_path]
             elif field.name in raw:

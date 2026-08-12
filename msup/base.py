@@ -32,6 +32,7 @@ def metadata_from_annotations(annotations: list[Any], field_name: str = "") -> "
 def selected_target_fields(target: type | Callable[..., Any]) -> "list[FieldSpec]": ...
 def load_callable(name: str) -> Any: ...
 def dump_callable(value: Any) -> str: ...
+def str2bool(value: str) -> bool: ...
 # fmt: on
 
 
@@ -188,39 +189,22 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
             result.append(FieldSpec(name, annotation, annotations, default, MISSING))
 
     owner_name = target.__qualname__
-    linked_selectors: set[str] = set()
-    indexed_fields = {field.name: (index, field) for index, field in enumerate(result)}
-    for field_index, field in enumerate(result):
+    prior_fields: dict[str, FieldSpec] = {}
+    for field in result:
         field_name = f"{owner_name}.{field.name}"
         metadata = metadata_from_annotations(field.annotations, field_name)
-        if metadata is None or metadata.kwargs_for is None:
-            continue
-        relation_name = metadata.kwargs_for
-        relation_annotation = normalize_annotation(field.annotation)
-        if get_origin(relation_annotation) is not dict or get_args(relation_annotation) != (str, Any):
-            raise TypeError(f"{field_name}: kwargs_for fields must be annotated as dict[str, Any] or Kwargs")
-        if field.name == relation_name:
-            raise TypeError(f"{field_name}: kwargs_for must name a different selector field")
-        if relation_name not in indexed_fields:
-            raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} does not exist")
-        selector_index, selector = indexed_fields[relation_name]
-        if selector_index >= field_index:
-            raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} must precede the kwargs field")
-        selector_metadata = metadata_from_annotations(selector.annotations, f"{owner_name}.{selector.name}")
-        if selector_metadata is not None and selector_metadata.kwargs_for is not None:
-            raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} cannot be a kwargs field")
-        if annotation_origin(selector.annotation) is not Callable2:
-            raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} must be annotated as Callable")
-        if relation_name in linked_selectors:
-            raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} already has a kwargs field")
-        field.kwargs_relation = selector
-        linked_selectors.add(relation_name)
-    if is_pydantic_model(target):
-        for field in result:
-            if field.kwargs_relation is not None or field.name in linked_selectors:
-                alias = cast(Any, target).model_fields[field.name].validation_alias
-                if alias is not None and not isinstance(alias, str):
-                    raise TypeError(f"{owner_name}.{field.name}: kwargs_for only supports string validation aliases")
+        if metadata is not None and metadata.kwargs_for is not None:
+            relation_name = metadata.kwargs_for
+            relation_annotation = normalize_annotation(field.annotation)
+            if get_origin(relation_annotation) is not dict or get_args(relation_annotation) != (str, Any):
+                raise TypeError(f"{field_name}: kwargs_for fields must be annotated as dict[str, Any] or Kwargs")
+            selector = prior_fields.get(relation_name)
+            if selector is None:
+                raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} is not a preceding field")
+            if annotation_origin(selector.annotation) is not Callable2:
+                raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} must be annotated as Callable")
+            field.kwargs_relation = selector
+        prior_fields[field.name] = field
     return result
 
 
@@ -244,8 +228,23 @@ def dump_callable(value: Any) -> str:
     return result
 
 
+def str2bool(value: str) -> bool:
+    normalized = value.lower()
+    if normalized in ("y", "yes", "on", "1", "true", "t"):
+        result = True
+    elif normalized in ("n", "no", "off", "0", "false", "f"):
+        result = False
+    else:
+        raise TypeError(f"invalid boolean value {value!r}; expected true/false, 1/0, yes/no, on/off, y/n, or t/f")
+    return result
+
+
+def maybe_idx(xs: tuple[Any, ...] | list[Any], idx: int, default: Any = None) -> Any:
+    return xs[idx] if idx < len(xs) else default
+
+
 def get_optional_type(annotation: Any) -> Any | None:
-    annotation = normalize_annotation(annotation)
+    annotation, _ = unwrap_annotated(annotation)
     args = get_args(annotation)
     if get_origin(annotation) in (Union, UnionType) and len(args) == 2 and type(None) in args:
         result = next(arg for arg in args if arg is not type(None))
@@ -255,13 +254,13 @@ def get_optional_type(annotation: Any) -> Any | None:
 
 
 def get_collection_args(annotation: Any, count: int = 0) -> tuple[Any, ...]:
-    annotation = normalize_annotation(annotation)
+    annotation, _ = unwrap_annotated(annotation)
     origin = annotation_origin(annotation)
     args = get_args(annotation)
     if origin is dict:
-        result = (args + (Any, Any))[:2]
+        result = (maybe_idx(args, 0, Any), maybe_idx(args, 1, Any))
     elif origin is list:
-        item_type = args[0] if args else Any
+        item_type = maybe_idx(args, 0, Any)
         result = (item_type,) * count if count else (item_type,)
     elif origin is tuple:
         if len(args) == 2 and args[1] is Ellipsis:
@@ -280,33 +279,41 @@ def is_optional(annotation: Any) -> bool:
 
 
 def annotation_origin(annotation: Any) -> Any:
-    annotation = normalize_annotation(annotation)
-    result = get_origin(annotation) or annotation
-    return result
+    annotation, _ = unwrap_annotated(annotation)
+    return get_origin(annotation) or annotation
 
 
 def effective_type(annotation: Any, field_name: str) -> Any:
-    annotation = normalize_annotation(annotation)
+    annotation, _ = unwrap_annotated(annotation)
     optional_type = get_optional_type(annotation)
     if optional_type is not None:
-        return optional_type
-    if annotation_origin(annotation) in (Union, UnionType):
+        result = optional_type
+    elif annotation_origin(annotation) in (Union, UnionType):
         raise TypeError(f"{field_name}: non-optional union annotations are not supported by the CLI: {annotation}")
-    return annotation
+    else:
+        result = annotation
+    return result
 
 
 def union_member(annotation: Any, concrete_type: type, field_name: str = "value") -> Any:
-    candidates = [
-        member for member in get_args(annotation) if member is not type(None) and is_compat(member, concrete_type)[0]
-    ]
+    candidates = []
+    for member in get_args(annotation):
+        if member is type(None):
+            continue
+        compatible, _ = is_compat(member, concrete_type)
+        if compatible:
+            candidates.append(member)
+
     exact = [member for member in candidates if annotation_origin(member) is concrete_type]
     if len(exact) == 1:
-        return exact[0]
-    if len(candidates) == 1:
-        return candidates[0]
-    if not candidates:
+        result = exact[0]
+    elif len(candidates) == 1:
+        result = candidates[0]
+    elif not candidates:
         raise TypeError(f"{field_name}: {annotation} cannot be converted from {concrete_type}")
-    raise TypeError(f"{field_name}: ambiguous conversion from {concrete_type} to {annotation}: {candidates}")
+    else:
+        raise TypeError(f"{field_name}: ambiguous conversion from {concrete_type} to {annotation}: {candidates}")
+    return result
 
 
 def enum_type(annotation: Any) -> type[Enum] | None:
@@ -319,7 +326,8 @@ def enum_type(annotation: Any) -> type[Enum] | None:
 
 
 def validate_enum_values(enum_type: type[Enum], field_name: str) -> None:
-    if any(type(member.value) not in (str, int, float, bool) for member in enum_type):
+    supported_types = (str, int, float, bool)
+    if any(type(member.value) not in supported_types for member in enum_type):
         raise TypeError(f"{field_name}: {enum_type.__name__} values must be str, int, float, or bool")
 
 
@@ -410,6 +418,7 @@ def selected_target_fields(target: type | Callable[..., Any]) -> list[FieldSpec]
         if annotation is inspect.Parameter.empty:
             raise TypeError(f"{name}: selected target parameters must have an annotation")
         annotation, annotations = unwrap_annotated(annotation)
+        annotation = normalize_annotation(annotation)
         if not _conversion_annotation_supported(annotation):
             raise TypeError(f"{name}: unsupported selected target annotation: {annotation}")
         default = MISSING if parameter.default is inspect._empty else parameter.default
@@ -442,79 +451,82 @@ def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: st
         if optional_type is not None:
             result = from_dict_value(x, optional_type, concrete_type, field_name)
         elif origin in (Union, UnionType):
-            result = from_dict_value(x, union_member(field_type, concrete_type, field_name), concrete_type, field_name)
-        elif (enum_class := enum_type(field_type)) is not None:
-            validate_enum_values(enum_class, field_name)
-            try:
-                result = x if isinstance(x, enum_class) else enum_class(x)
-            except ValueError as error:
-                raise TypeError(
-                    f"{field_name}: invalid {enum_class.__name__} value {x!r}; expected one of {[member.value for member in enum_class]}"
-                ) from error
-        elif origin is Callable2:
-            if isinstance(x, str):
-                result = load_callable(x)
-            else:
-                result = x
-            if not callable(result):
-                if isinstance(x, str):
-                    raise TypeError(f"{field_name}: {x} does not resolve to a callable")
-                raise TypeError(f"{field_name}: expected a callable or importable callable reference")
+            member = union_member(field_type, concrete_type, field_name)
+            result = from_dict_value(x, member, concrete_type, field_name)
         else:
-            compatible, _ = is_compat(field_type, concrete_type)
-            if not compatible:
-                raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
-            if field_type is Any:
+            enum_class = enum_type(field_type)
+            if enum_class is not None:
+                validate_enum_values(enum_class, field_name)
+                if isinstance(x, enum_class):
+                    result = x
+                else:
+                    try:
+                        result = enum_class(x)
+                    except ValueError as error:
+                        values = [member.value for member in enum_class]
+                        raise TypeError(
+                            f"{field_name}: invalid {enum_class.__name__} value {x!r}; expected one of {values}"
+                        ) from error
+            elif origin is Callable2:
+                if isinstance(x, str):
+                    result = load_callable(x)
+                    if not callable(result):
+                        raise TypeError(f"{field_name}: {x} does not resolve to a callable")
+                elif callable(x):
+                    result = x
+                else:
+                    raise TypeError(f"{field_name}: expected a callable or importable callable reference")
+            else:
+                compatible, _ = is_compat(field_type, concrete_type)
+                if not compatible:
+                    raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
+            if enum_class is not None or origin is Callable2:
+                pass
+            elif field_type is Any:
                 result = x
             elif is_structured_model(field_type):
-                raw = dict_from_str(x) if isinstance(x, str) else x
                 if concrete_type is field_type:
                     result = x
-                elif is_dataclass(field_type):
-                    result = field_type(**_from_kwargs(field_type, raw, field_name))
+                elif isinstance(x, str):
+                    result = from_dict(field_type, dict_from_str(x))
                 else:
-                    result = from_dict(field_type, raw)
-            elif origin is bool and isinstance(x, str):
-                normalized = x.lower()
-                if normalized in ("y", "yes", "on", "1", "true", "t"):
-                    result = True
-                elif normalized in ("n", "no", "off", "0", "false", "f"):
-                    result = False
-                else:
-                    raise TypeError(
-                        f"{field_name}: invalid boolean value {x!r}; expected true/false, 1/0, yes/no, on/off, y/n, or t/f"
-                    )
-            elif origin in (int, float, str, bool):
-                result = field_type(x)
-            elif origin is dict:
-                raw = dict_from_str(x) if isinstance(x, str) else x
-                key_type, value_type = get_collection_args(field_type)
-                result = {
-                    from_dict_value(key, key_type, type(key), f"{field_name}.key"): from_dict_value(
-                        value, value_type, type(value), f"{field_name}.value"
-                    )
-                    for key, value in raw.items()
-                }
-            elif origin in (list, tuple):
-                item_types = get_collection_args(field_type, len(x))
-                if (
-                    origin is tuple
-                    and len(get_args(field_type)) > 1
-                    and get_args(field_type)[1] is not Ellipsis
-                    and len(x) != len(item_types)
-                ):
-                    raise TypeError(f"{field_name}: expected {len(item_types)} tuple values, got {len(x)}")
-                result = origin(
-                    from_dict_value(
-                        item,
-                        item_types[index] if index < len(item_types) else Any,
-                        type(item),
-                        f"{field_name}[{index}]",
-                    )
-                    for index, item in enumerate(x)
-                )
+                    result = from_dict(field_type, x)
             else:
-                raise TypeError(f"unexpected type: {field_type} (origin={origin})")
+                if origin is bool and isinstance(x, str):
+                    result = str2bool(x)
+                elif origin in (int, float, str, bool):
+                    result = field_type(x)
+                elif origin is dict:
+                    raw = dict_from_str(x) if isinstance(x, str) else x
+                    key_type, value_type = get_collection_args(field_type)
+                    result = {
+                        from_dict_value(key, key_type, type(key), f"{field_name}.key"): from_dict_value(
+                            value, value_type, type(value), f"{field_name}.value"
+                        )
+                        for key, value in raw.items()
+                    }
+                elif origin in (list, tuple):
+                    item_types = get_collection_args(field_type, len(x))
+                    if (
+                        origin is tuple
+                        and len(get_args(field_type)) > 1
+                        and get_args(field_type)[1] is not Ellipsis
+                        and len(x) != len(item_types)
+                    ):
+                        raise TypeError(f"{field_name}: expected {len(item_types)} tuple values, got {len(x)}")
+                    result = origin(
+                        from_dict_value(
+                            item,
+                            item_types[index] if index < len(item_types) else Any,
+                            type(item),
+                            f"{field_name}[{index}]",
+                        )
+                        for index, item in enumerate(x)
+                    )
+                elif origin is Callable2:
+                    pass
+                else:
+                    raise TypeError(f"unexpected type: {field_type} (origin={origin})")
     return result
 
 
@@ -665,7 +677,7 @@ def _from_kwargs(owner: type | Callable[..., Any], values: Mapping[str, Any], ow
     pydantic_owner = is_pydantic_model(owner)
     result = dict(values) if pydantic_owner else {}
     for f in field_info:
-        dependent = next((field for field in field_info if field.kwargs_relation is f), None)
+        dependents = [field for field in field_info if field.kwargs_relation is f]
         field_name = f"{owner_name}.{f.name}"
         if f.kwargs_relation is not None:
             supplied = values.get(f.name, MISSING)
@@ -690,7 +702,7 @@ def _from_kwargs(owner: type | Callable[..., Any], values: Mapping[str, Any], ow
             if not isinstance(default, Mapping):
                 raise TypeError(f"{field_name}: expected a mapping default, got {type(default)}")
             result[f.name] = _kwargs_from_fields(parameters, {**default, **supplied}, field_name)
-        elif dependent is not None:
+        elif dependents:
             value = values.get(f.name, MISSING)
             if value is MISSING and pydantic_owner:
                 alias = cast(Any, owner).model_fields[f.name].validation_alias
@@ -703,7 +715,7 @@ def _from_kwargs(owner: type | Callable[..., Any], values: Mapping[str, Any], ow
                 value = f.default_factory()
                 result[f.name] = from_dict_value(value, f.annotation, type(value), field_name)
             else:
-                raise TypeError(f"{field_name}: missing selector for {dependent.name!r}")
+                raise TypeError(f"{field_name}: missing selector for {dependents[0].name!r}")
         elif (value := values.get(f.name, MISSING)) is not MISSING:
             field_type = get_optional_type(f.annotation) or normalize_annotation(f.annotation) or type(value)
             if inspect.isclass(field_type) and any(
