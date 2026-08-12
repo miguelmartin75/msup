@@ -10,19 +10,18 @@ from typing import Any, Callable, cast, get_args
 from msup.base import (
     FieldSpec,
     Metadata,
-    _construct_owner,
-    _kwargs_from_fields,
     annotation_origin,
     enum_type,
     effective_type,
     fields_or_init_kwargs,
     from_dict_value,
+    from_kwargs,
     get_collection_args,
     has_default_value,
     is_structured_model,
     metadata_from_annotations,
     selected_target_fields,
-    str2bool,
+    str_to_bool,
     to_kwargs,
 )
 
@@ -119,7 +118,7 @@ def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], An
     elif annotation in (str, int, float):
         result = annotation
     elif annotation is bool:
-        result = str2bool
+        result = str_to_bool
     elif enum_type(annotation) is not None:
         result = enum_argument_type(annotation, field_name)
     else:
@@ -141,7 +140,7 @@ def _add_argument(parser, args, kwargs, annotation, field_name, help_text, posit
         if not positional:
             kwargs["nargs"] = "?"
             kwargs["const"] = True
-        kwargs["type"] = str2bool
+        kwargs["type"] = str_to_bool
         kwargs["metavar"] = "{0|1,true|false,yes|no}"
     elif (enum_class := enum_type(field_type)) is not None:
         kwargs["type"] = enum_argument_type(field_type, field_name)
@@ -553,7 +552,23 @@ def _construct_dynamic_owner(owner, path, raw_trees, targets, target_fields, arg
                 default = _default_value(field)
                 if default is not MISSING:
                     values = _merge_mappings(_mapping_value(default, name), values)
-            result[field.name] = _kwargs_from_fields(parameters, values, name)
+            parameter_names = {parameter.name for parameter in parameters}
+            unknown = next((key for key in values if key not in parameter_names), None)
+            if unknown is not None:
+                raise TypeError(f"{name}.{unknown}: unknown target parameter")
+            converted = {}
+            for parameter in parameters:
+                if parameter.name in values:
+                    value = values[parameter.name]
+                    converted[parameter.name] = from_dict_value(
+                        value,
+                        parameter.annotation or type(value),
+                        type(value),
+                        f"{name}.{parameter.name}",
+                    )
+                elif parameter.default is MISSING:
+                    raise TypeError(f"{name}.{parameter.name}: missing required target parameter")
+            result[field.name] = converted
         elif dependents:
             if field_path in targets:
                 result[field.name] = targets[field_path]
@@ -569,7 +584,14 @@ def _construct_dynamic_owner(owner, path, raw_trees, targets, target_fields, arg
             result[field.name] = from_dict_value(value, field.annotation, type(value), name)
         elif not pydantic_owner and not has_default_value(field):
             error_exit(f"--{name} not provided (default value DNE)", 3)
-    return _construct_owner(owner, result) if inspect.isclass(owner) else result
+    if is_dataclass(owner):
+        return owner(**result)
+    elif is_structured_model(owner):
+        return cast(Any, owner).model_validate(from_kwargs(owner, result))
+    elif inspect.isclass(owner):
+        return owner(**result)
+    else:
+        return result
 
 
 def _validate_dynamic_layout(owner, path=()) -> None:

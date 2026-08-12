@@ -3,7 +3,7 @@
 ## Status
 
 - Phase 1: Complete
-- Phase 2: Not started
+- Phase 2: Complete
 - Phase 3: Not started
 - Phase 4: Not started
 - Phase 5: Not started
@@ -24,6 +24,11 @@ baseline shape, keep one focused second reflection pass for relation fields,
 and add relation-specific behavior directly at the existing conversion and CLI
 decision points. Do not replace ordinary CLI parsing with a generic source
 tree, materialization state, or parallel dynamic-owner framework.
+
+After every correctness-review cycle, inspect the production LOC delta and
+apply accepted behavior-preserving simplifications before completing the
+phase. The final combined LOC of `msup/base.py` and `msup/cli.py` must be lower
+than the 1,443-line pre-follow-up state at commit `4e89338`.
 
 ## Code map
 
@@ -94,8 +99,8 @@ tree, materialization state, or parallel dynamic-owner framework.
    `TypeAliasType` unwrapping. Preserve only named feature-required deviations:
    relation metadata/linking, lazy Pydantic factory extraction, canonical
    callable loading/dumping, selected-target reflection, relation
-   conversion/serialization, the second CLI parse, and shared `str2bool`.
-5. Move `str2bool` to `msup/base.py` as a public shared conversion helper and
+   conversion/serialization, the second CLI parse, and shared `str_to_bool`.
+5. Move `str_to_bool` to `msup/base.py` as a public shared conversion helper and
    add it to the module's forward declarations.
    Make its error and accepted spellings suitable for both dictionary and CLI
    conversion, and import it from `msup.cli`.
@@ -110,7 +115,7 @@ and 1 deselected; `uv run --group dev --extra pydantic ty check msup`,
 `./run.py lint_check`, and `./run.py format_check` passed. `./run.py check`
 reached the known Phase 4 test import of `msup.cli.strtobool` and stopped with
 one type diagnostic because that test has not yet moved to public
-`msup.base.str2bool`.
+`msup.base.str_to_bool`.
 
 ## Phase 2: Inline base relation conversion and serialization
 
@@ -151,6 +156,20 @@ one type diagnostic because that test has not yet moved to public
 **Success criteria:** no `_to_dict`, `_from_kwargs`, or `_construct_owner`
 remains; no module imports private base helpers; round trips retain typed
 kwargs and selected targets remain uncalled.
+
+**Validation:** `uv run --group dev --extra pydantic pytest
+tests/test_basic.py -k 'not kwargs_relation_schemas_reject_invalid_links'`
+passed with 25 tests and 1 deselected; `uv run --group dev --extra pydantic
+pytest tests/test_pydantic.py -k 'not
+pydantic_relation_owners_use_native_validation_and_string_aliases'` passed
+with 17 tests and 1 deselected; `uv run --group dev --extra pydantic ty check
+msup`, `./run.py lint_check`, `./run.py format_check`, and `git diff --check`
+passed. Focused probes passed for string and sequence `AliasPath` fallback,
+ordered `AliasChoices`, copy-on-write sibling preservation, nested diagnostic
+paths, optional structured `None`, multiple dependents, and target
+non-invocation. The post-review simplification pass removed 19 production
+lines; combined production LOC is 1,547, with the remaining reduction owned by
+Phase 3's CLI pipeline removal.
 
 ## Phase 3: Restore the ordinary CLI flow and isolate relation parsing
 
@@ -206,7 +225,7 @@ kwargs and selected targets remain uncalled.
    positional restriction for relation owners.
 9. Let `effective_type` retain annotation semantics. Relation handling belongs
    at parser and conversion sites where the selector value is available. Use
-   public `str2bool` and existing public base APIs; import no private base
+   public `str_to_bool` and existing public base APIs; import no private base
    helpers.
 
 **Success criteria:** normal commands follow the familiar pre-feature CLI
@@ -220,7 +239,7 @@ work; and CLI conversion never constructs or invokes selected targets.
 **Status:** Not started
 
 1. Update boolean-helper imports and assertions for public
-   `msup.base.str2bool`. Remove tests and imports for `_add_target_args`,
+   `msup.base.str_to_bool`. Remove tests and imports for `_add_target_args`,
    `_bootstrap_owner`, `_kwargs_from_fields`, `_construct_owner`,
    `_from_kwargs`, `_RAW_MATERIALIZED`, and any new implementation-only
    replacement.
@@ -271,7 +290,8 @@ cases.
 
 **Success criteria:** every repository check passes, the entire test suite
 passes, and the final production diff is limited to necessary relation support
-and the shared boolean helper.
+and the shared boolean helper. The combined production LOC is below 1,443
+lines.
 
 ## Review-comment disposition
 
@@ -281,7 +301,7 @@ and the shared boolean helper.
 | 6, 7 | Phase 1 restores the prior readable `get_collection_args` implementation. |
 | 8 | Phase 1 restores the prior helper control-flow shapes for annotation origin, effective type, and union selection. |
 | 9 | Phase 1 restores the named enum supported-types local. |
-| 10, 17 | Phase 1 adds public `str2bool` to `msup/base.py`; Phase 3 imports and uses it from there. |
+| 10, 17 | Phase 1 adds public `str_to_bool` to `msup/base.py`; Phase 3 imports and uses it from there. |
 | 11 | Phase 2 inlines `_to_dict` into `to_dict`. |
 | 12, 13 | Phase 2 removes repeated wrapping/validation and inlines the three-use `_kwargs_from_fields` logic instead of promoting a premature public abstraction. |
 | 14 | Phase 2 inlines `_from_kwargs` into `from_kwargs` and deletes the private wrapper. |

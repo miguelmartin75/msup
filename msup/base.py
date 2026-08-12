@@ -2,7 +2,7 @@ import inspect
 import json
 import os
 import pkgutil
-from collections.abc import Callable as Callable2, Mapping
+from collections.abc import Callable as Callable2, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
@@ -15,10 +15,14 @@ type Kwargs = dict[str, Any]
 
 # fmt: off
 def to_kwargs(clazz: type | Callable[..., Any], x: Any) -> dict[str, Any]: ...
-def from_dict(clazz: type[T], x: dict[Any, Any]) -> T: ...
+def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = None) -> T: ...
 def kwargs_from_dict(target: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str = "kwargs") -> dict[str, Any]: ...
-def from_kwargs(owner: type | Callable[..., Any], values: Mapping[str, Any]) -> dict[str, Any]: ...
-def to_dict(x: Any, type_class: type | Callable[..., Any] | None = None) -> dict[str, Any]: ...
+def from_kwargs(
+    owner: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str | None = None
+) -> dict[str, Any]: ...
+def to_dict(
+    x: Any, type_class: type | Callable[..., Any] | None = None, *, field_name: str | None = None
+) -> dict[str, Any]: ...
 def to_json(
     x: Any,
     file_like=None,
@@ -32,7 +36,7 @@ def metadata_from_annotations(annotations: list[Any], field_name: str = "") -> "
 def selected_target_fields(target: type | Callable[..., Any]) -> "list[FieldSpec]": ...
 def load_callable(name: str) -> Any: ...
 def dump_callable(value: Any) -> str: ...
-def str2bool(value: str) -> bool: ...
+def str_to_bool(value: str) -> bool: ...
 # fmt: on
 
 
@@ -228,7 +232,7 @@ def dump_callable(value: Any) -> str:
     return result
 
 
-def str2bool(value: str) -> bool:
+def str_to_bool(value: str) -> bool:
     normalized = value.lower()
     if normalized in ("y", "yes", "on", "1", "true", "t"):
         result = True
@@ -488,12 +492,12 @@ def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: st
                 if concrete_type is field_type:
                     result = x
                 elif isinstance(x, str):
-                    result = from_dict(field_type, dict_from_str(x))
+                    result = from_dict(field_type, dict_from_str(x), field_name=field_name)
                 else:
-                    result = from_dict(field_type, x)
+                    result = from_dict(field_type, x, field_name=field_name)
             else:
                 if origin is bool and isinstance(x, str):
-                    result = str2bool(x)
+                    result = str_to_bool(x)
                 elif origin in (int, float, str, bool):
                     result = field_type(x)
                 elif origin is dict:
@@ -567,29 +571,31 @@ def to_dict_value(x: Any, field_type: Any) -> Any:
         return x
 
 
-def _to_dict_value(value: Any, annotation: Any, field_name: str) -> Any:
-    if value is None:
-        return None
-    annotation = get_optional_type(annotation) or normalize_annotation(annotation)
-    if annotation_origin(annotation) in (Union, UnionType):
-        annotation = union_member(annotation, type(value), field_name)
-    if is_structured_model(annotation) or (
-        inspect.isclass(annotation)
-        and any(field.kwargs_relation is not None for field in fields_or_init_kwargs(annotation))
-    ):
-        return _to_dict(value, None, field_name)
-    return to_dict_value(value, annotation)
-
-
-def _to_dict(x: Any, type_class: type | Callable[..., Any] | None, owner_name: str) -> dict[str, Any]:
+def to_dict(
+    x: Any, type_class: type | Callable[..., Any] | None = None, *, field_name: str | None = None
+) -> dict[str, Any]:
     result: dict[str, Any] = {}
     mapping = x if isinstance(x, Mapping) else None
-    for f in fields_or_init_kwargs(type(x) if type_class is None else type_class):
+    owner = type(x) if type_class is None else type_class
+    owner_name = field_name or cast(Any, owner).__qualname__
+    for f in fields_or_init_kwargs(owner):
         value = mapping[f.name] if mapping is not None and f.name in mapping else getattr(x, f.name, MISSING)
         if value is MISSING:
             continue
         if f.kwargs_relation is None:
-            result[f.name] = _to_dict_value(value, f.annotation or type(value), f"{owner_name}.{f.name}")
+            annotation = get_optional_type(f.annotation) or normalize_annotation(f.annotation) or type(value)
+            field_name = f"{owner_name}.{f.name}"
+            if annotation_origin(annotation) in (Union, UnionType):
+                annotation = union_member(annotation, type(value), field_name)
+            relation_owner = (
+                inspect.isclass(annotation)
+                and annotation.__module__ not in ("builtins", "collections.abc")
+                and any(field.kwargs_relation is not None for field in fields_or_init_kwargs(annotation))
+            )
+            if value is not None and (is_structured_model(annotation) or relation_owner):
+                result[f.name] = to_dict(value, annotation, field_name=field_name)
+            else:
+                result[f.name] = to_dict_value(value, annotation)
         else:
             target = (
                 mapping.get(f.kwargs_relation.name, MISSING)
@@ -600,18 +606,21 @@ def _to_dict(x: Any, type_class: type | Callable[..., Any] | None, owner_name: s
             if target is MISSING:
                 raise TypeError(f"{field_name}: missing selector {f.kwargs_relation.name!r}")
             typed_values = kwargs_from_dict(target, value, field_name=field_name)
-            result[f.name] = {
-                parameter.name: _to_dict_value(
-                    typed_values[parameter.name], parameter.annotation, f"{field_name}.{parameter.name}"
-                )
-                for parameter in selected_target_fields(target)
-                if parameter.name in typed_values
-            }
+            serialized_values = {}
+            for parameter in selected_target_fields(target):
+                if parameter.name not in typed_values:
+                    continue
+                parameter_value = typed_values[parameter.name]
+                annotation = get_optional_type(parameter.annotation) or normalize_annotation(parameter.annotation)
+                parameter_name = f"{field_name}.{parameter.name}"
+                if annotation_origin(annotation) in (Union, UnionType):
+                    annotation = union_member(annotation, type(parameter_value), parameter_name)
+                if parameter_value is not None and is_structured_model(annotation):
+                    serialized_values[parameter.name] = to_dict(parameter_value, annotation, field_name=parameter_name)
+                else:
+                    serialized_values[parameter.name] = to_dict_value(parameter_value, annotation)
+            result[f.name] = serialized_values
     return result
-
-
-def to_dict(x: Any, type_class: type | Callable[..., Any] | None = None) -> dict[str, Any]:
-    return _to_dict(x, type_class, cast(Any, type_class or type(x)).__qualname__)
 
 
 def to_kwargs(clazz: type | Callable[..., Any], x: Any) -> dict[str, Any]:
@@ -625,10 +634,19 @@ def to_kwargs(clazz: type | Callable[..., Any], x: Any) -> dict[str, Any]:
     return result
 
 
-def _kwargs_from_fields(parameters: list[FieldSpec], values: Mapping[str, Any], field_name: str) -> dict[str, Any]:
+def kwargs_from_dict(
+    target: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str = "kwargs"
+) -> dict[str, Any]:
+    """Converts a selected target's explicit kwargs without invoking the target."""
+
+    try:
+        parameters = selected_target_fields(target)
+    except TypeError as error:
+        raise TypeError(f"{field_name}: {error}") from error
     if not isinstance(values, Mapping):
         raise TypeError(f"{field_name}: expected a mapping, got {type(values)}")
-    unknown = next((name for name in values if name not in {parameter.name for parameter in parameters}), None)
+    parameter_names = {parameter.name for parameter in parameters}
+    unknown = next((name for name in values if name not in parameter_names), None)
     if unknown is not None:
         raise TypeError(f"{field_name}.{unknown}: unknown target parameter")
     result = {}
@@ -643,55 +661,60 @@ def _kwargs_from_fields(parameters: list[FieldSpec], values: Mapping[str, Any], 
     return result
 
 
-def kwargs_from_dict(
-    target: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str = "kwargs"
+def from_kwargs(
+    owner: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str | None = None
 ) -> dict[str, Any]:
-    """Converts a selected target's explicit kwargs without invoking the target."""
+    """Converts an owner's linked fields without invoking a function owner."""
 
-    try:
-        parameters = selected_target_fields(target)
-    except TypeError as error:
-        raise TypeError(f"{field_name}: {error}") from error
-    return _kwargs_from_fields(parameters, values, field_name)
-
-
-def _construct_owner(owner: type, values: Mapping[str, Any]) -> Any:
-    if is_pydantic_model(owner):
-        result = dict(values)
-        fields = fields_or_init_kwargs(owner)
-        for field in fields:
-            if field.kwargs_relation is not None or any(item.kwargs_relation is field for item in fields):
-                alias = cast(Any, owner).model_fields[field.name].validation_alias
-                if isinstance(alias, str) and field.name in result:
-                    result[alias] = result.pop(field.name)
-        result = cast(Any, owner).model_validate(result)
-    else:
-        result = owner(**values)
-    return result
-
-
-def _from_kwargs(owner: type | Callable[..., Any], values: Mapping[str, Any], owner_name: str) -> dict[str, Any]:
+    owner_name = field_name or cast(Any, owner).__qualname__
     if not isinstance(values, Mapping):
-        raise TypeError(f"{owner.__qualname__}: expected a mapping, got {type(values)}")
+        raise TypeError(f"{owner_name}: expected a mapping, got {type(values)}")
     field_info = fields_or_init_kwargs(owner)
     pydantic_owner = is_pydantic_model(owner)
     result = dict(values) if pydantic_owner else {}
+    converted_fields: dict[str, Any] = {}
     for f in field_info:
-        dependents = [field for field in field_info if field.kwargs_relation is f]
-        field_name = f"{owner_name}.{f.name}"
+        dependent = next((field for field in field_info if field.kwargs_relation is f), None)
+        current_field_name = f"{owner_name}.{f.name}"
+        paths: list[list[str | int]] = []
+        if pydantic_owner:
+            alias = cast(Any, owner).model_fields[f.name].validation_alias
+            if cast(Any, owner).model_config.get("validate_by_alias", True):
+                if isinstance(alias, str):
+                    paths = [[alias]]
+                elif alias is not None:
+                    aliases = alias.convert_to_aliases()
+                    paths = aliases if aliases and isinstance(aliases[0], list) else [aliases]
+            if alias is None or cast(Any, owner).model_config.get("validate_by_name", False):
+                paths.append([f.name])
+        else:
+            paths = [[f.name]]
+        value = MISSING
+        winning_path: list[str | int] | None = None
+        for path in paths:
+            candidate: Any = values
+            for key in path:
+                if isinstance(candidate, str):
+                    candidate = MISSING
+                    break
+                try:
+                    candidate = candidate[key]
+                except (KeyError, IndexError, TypeError):
+                    candidate = MISSING
+                    break
+            if candidate is not MISSING:
+                value = candidate
+                winning_path = path
+                break
         if f.kwargs_relation is not None:
-            supplied = values.get(f.name, MISSING)
-            if supplied is MISSING and pydantic_owner:
-                alias = cast(Any, owner).model_fields[f.name].validation_alias
-                supplied = values.get(alias, MISSING) if isinstance(alias, str) else MISSING
-            supplied = {} if supplied is MISSING else supplied
+            supplied = {} if value is MISSING else value
             if not isinstance(supplied, Mapping):
-                raise TypeError(f"{field_name}: expected a mapping, got {type(supplied)}")
-            target = result[f.kwargs_relation.name]
+                raise TypeError(f"{current_field_name}: expected a mapping, got {type(supplied)}")
+            target = converted_fields[f.kwargs_relation.name]
             try:
                 parameters = selected_target_fields(target)
             except TypeError as error:
-                raise TypeError(f"{field_name}: {error}") from error
+                raise TypeError(f"{current_field_name}: {error}") from error
             if any(parameter.name not in supplied for parameter in parameters):
                 if f.default is not MISSING:
                     default = deepcopy(f.default)
@@ -700,52 +723,107 @@ def _from_kwargs(owner: type | Callable[..., Any], values: Mapping[str, Any], ow
             else:
                 default = {}
             if not isinstance(default, Mapping):
-                raise TypeError(f"{field_name}: expected a mapping default, got {type(default)}")
-            result[f.name] = _kwargs_from_fields(parameters, {**default, **supplied}, field_name)
-        elif dependents:
-            value = values.get(f.name, MISSING)
-            if value is MISSING and pydantic_owner:
-                alias = cast(Any, owner).model_fields[f.name].validation_alias
-                value = values.get(alias, MISSING) if isinstance(alias, str) else MISSING
+                raise TypeError(f"{current_field_name}: expected a mapping default, got {type(default)}")
+            merged = {**default, **supplied}
+            parameter_names = {parameter.name for parameter in parameters}
+            unknown = next((name for name in merged if name not in parameter_names), None)
+            if unknown is not None:
+                raise TypeError(f"{current_field_name}.{unknown}: unknown target parameter")
+            converted = {}
+            for parameter in parameters:
+                if parameter.name in merged:
+                    parameter_value = merged[parameter.name]
+                    converted[parameter.name] = from_dict_value(
+                        parameter_value,
+                        parameter.annotation or type(parameter_value),
+                        type(parameter_value),
+                        f"{current_field_name}.{parameter.name}",
+                    )
+                elif parameter.default is MISSING:
+                    raise TypeError(f"{current_field_name}.{parameter.name}: missing required target parameter")
+            converted_fields[f.name] = converted
+        elif dependent is not None:
             if value is not MISSING:
-                result[f.name] = from_dict_value(value, f.annotation or type(value), type(value), field_name)
+                converted = from_dict_value(value, f.annotation or type(value), type(value), current_field_name)
             elif f.default is not MISSING:
-                result[f.name] = from_dict_value(deepcopy(f.default), f.annotation, type(f.default), field_name)
+                default = deepcopy(f.default)
+                converted = from_dict_value(default, f.annotation, type(default), current_field_name)
             elif f.default_factory is not MISSING:
                 value = f.default_factory()
-                result[f.name] = from_dict_value(value, f.annotation, type(value), field_name)
+                converted = from_dict_value(value, f.annotation, type(value), current_field_name)
             else:
-                raise TypeError(f"{field_name}: missing selector for {dependents[0].name!r}")
-        elif (value := values.get(f.name, MISSING)) is not MISSING:
+                raise TypeError(f"{current_field_name}: missing selector for {dependent.name!r}")
+            converted_fields[f.name] = converted
+        elif value is not MISSING:
             field_type = get_optional_type(f.annotation) or normalize_annotation(f.annotation) or type(value)
             if inspect.isclass(field_type) and any(
                 field.kwargs_relation is not None for field in fields_or_init_kwargs(field_type)
             ):
-                raw = dict_from_str(value) if isinstance(value, str) else value
-                result[f.name] = _construct_owner(field_type, _from_kwargs(field_type, raw, field_name))
+                if isinstance(value, field_type):
+                    converted = value
+                else:
+                    raw = dict_from_str(value) if isinstance(value, str) else value
+                    converted = from_dict(field_type, raw, field_name=current_field_name)
             elif not pydantic_owner:
-                result[f.name] = from_dict_value(value, f.annotation or field_type, type(value), field_name)
+                converted = from_dict_value(value, f.annotation or field_type, type(value), current_field_name)
+            else:
+                continue
+            converted_fields[f.name] = converted
+        else:
+            continue
+
+        if pydantic_owner:
+            path = winning_path or paths[0]
+            destination: Any = result
+            for index, key in enumerate(path):
+                if isinstance(destination, list):
+                    index_key = cast(int, key)
+                    while len(destination) < (index_key + 1 if index_key >= 0 else -index_key):
+                        destination.append(None)
+                    destination_key: Any = index_key
+                else:
+                    destination_key = key
+                container = cast(Any, destination)
+                if index == len(path) - 1:
+                    container[destination_key] = converted
+                    continue
+                child = (
+                    container.get(destination_key) if isinstance(destination, Mapping) else container[destination_key]
+                )
+                if isinstance(child, Mapping):
+                    child = dict(child)
+                elif (
+                    isinstance(path[index + 1], int)
+                    and isinstance(child, Sequence)
+                    and not isinstance(child, (str, bytes, bytearray))
+                ):
+                    child = list(child)
+                else:
+                    child = [] if isinstance(path[index + 1], int) else {}
+                container[destination_key] = child
+                destination = child
+        else:
+            result[f.name] = converted
     return result
 
 
-def from_kwargs(owner: type | Callable[..., Any], values: Mapping[str, Any]) -> dict[str, Any]:
-    """Converts an owner's linked fields without invoking a function owner."""
-
-    return _from_kwargs(owner, values, cast(Any, owner).__qualname__)
-
-
-def from_dict(clazz: type[T], x: dict[Any, Any]) -> T:
+def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = None) -> T:
+    owner_name = field_name or clazz.__qualname__
     if any(field.kwargs_relation is not None for field in fields_or_init_kwargs(clazz)):
-        result = _construct_owner(clazz, _from_kwargs(clazz, x, clazz.__qualname__))
-    elif is_dataclass(clazz):
-        result = clazz(**_from_kwargs(clazz, x, clazz.__qualname__))
+        values = from_kwargs(clazz, x, field_name=owner_name)
+        if is_pydantic_model(clazz):
+            result = cast(Any, clazz).model_validate(values)
+        else:
+            result = clazz(**values)
     elif is_pydantic_model(clazz):
         fields_or_init_kwargs(clazz)
         result = cast(Any, clazz).model_validate(x)
     else:
         result = clazz(
             **{
-                f.name: from_dict_value(x[f.name], f.annotation or type(x[f.name]), type(x[f.name]), f.name)
+                f.name: from_dict_value(
+                    x[f.name], f.annotation or type(x[f.name]), type(x[f.name]), f"{owner_name}.{f.name}"
+                )
                 for f in fields_or_init_kwargs(clazz)
                 if f.name in x
             }
