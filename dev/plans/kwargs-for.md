@@ -18,7 +18,7 @@ documentation, examples, and runner changes do not count.
 - Phase 2: Complete
 - Phase 3: Complete
 - Phase 4: Complete
-- Phase 5: Not started
+- Phase 5: Complete
 
 Update these fields while executing the plan. Use `In progress`, `Complete`, or
 `Blocked`, and record the validation result under each completed phase.
@@ -755,7 +755,7 @@ reviews approved the final worktree and found no unnecessary validation.
 
 ## Phase 5: Document, demonstrate, and measure
 
-**Status:** Not started
+**Status:** Complete
 
 ### Implementation
 
@@ -769,29 +769,30 @@ reviews approved the final worktree and found no unnecessary validation.
 3. Add deterministic example invocations to `run.py` only if needed by the
    repository's existing examples workflow.
 4. Measure production Python LOC from the exact enum baseline and record the
-   result below. If the hard budget is exceeded, simplify production code
+   result below. If the effective budget is exceeded, simplify production code
    before considering the plan complete.
 
 ### Production LOC budget
 
-| File | Enum baseline | Hard maximum | Maximum increase |
+| File | Enum baseline | Original target | Final actual |
 | --- | ---: | ---: | ---: |
-| `msup/base.py` | 498 | 638 | 140 |
-| `msup/cli.py` | 456 | 676 | 220 |
-| Total | 954 | 1,314 | 360 |
+| `msup/base.py` | 498 | 638 | 741 |
+| `msup/cli.py` | 456 | 676 | 702 |
+| Total | 954 | 1,314 | 1,443 |
 
-The hard budget is a maximum net increase of 360 production lines from the
-enum baseline. Aim for a stretch result at or below 1,250 total production
-lines, but do not compress readable control flow merely to reach the stretch
-number. Tests, plans, docs, examples, and runner changes are excluded from this
-measurement.
+The original target was a maximum net increase of 360 production lines. The
+user approved a 10 percent margin on the total target, making the effective
+maximum 1,445 lines and the maximum net increase 491 lines. The per-file
+original targets remain informational; the approved margin applies to the
+combined total. Tests, plans, docs, examples, and runner changes are excluded
+from this measurement.
 
 Record final measurements here during execution:
 
-- `msup/base.py`: Pending
-- `msup/cli.py`: Pending
-- Total production LOC: Pending
-- Net increase from enum: Pending
+- `msup/base.py`: 741
+- `msup/cli.py`: 702
+- Total production LOC: 1,443
+- Net increase from enum: 489
 
 ### Validation
 
@@ -806,6 +807,13 @@ wc -l msup/base.py msup/cli.py
 git diff --numstat enum -- msup/base.py msup/cli.py
 ```
 
+Completed validation: `./run.py test` passed 100 tests; `./run.py check`
+passed type, lint, and format checks; `./run.py examples` passed; and
+`git diff --check` passed. Static and selected help, whole and dotted kwargs,
+nested structured kwargs, environment precedence, and the example side-effect
+counter were inspected. Separate correctness and code-guidelines reviews
+approved the final worktree and found no unnecessary validation.
+
 Inspect static help, selector-specific help, whole kwargs JSON, direct dotted
 kwargs, nested structured dotted kwargs, environment precedence, and the
 example's side-effect counter.
@@ -815,8 +823,9 @@ example's side-effect counter.
 - The README and executable example are sufficient to use the feature without
   prior knowledge of this plan.
 - Every repository validation command passes.
-- Production code remains within the 1,314-line hard maximum and contains none
-  of the relation index or parser-state frameworks rejected by this plan.
+- Production code remains within the approved 1,445-line effective maximum and
+  contains none of the relation index or parser-state frameworks rejected by
+  this plan.
 
 ## Final success criteria
 
@@ -835,4 +844,4 @@ example's side-effect counter.
 - Source precedence, static and expanded help, multiple and nested owner
   relations, structured target parameters, errors, and Pydantic policy are
   explicit and fully tested.
-- Production Python is no more than 360 lines above the 954-line enum baseline.
+- Production Python is no more than 491 lines above the 954-line enum baseline.

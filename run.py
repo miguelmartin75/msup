@@ -85,6 +85,8 @@ def examples() -> None:
         run("./examples/function_args.py --help")
         run("./examples/function_args.py show --name integration --count 2")
         run("./examples/function_args.py echo --name integration --count 2")
+        run("./examples/kwargs_for.py convert")
+        run("./examples/kwargs_for.py run --kwargs.workers 6 --kwargs.limits.memory_gb 24")
         run("./examples/readme/train.py --optimizer.lr 0.01")
         run("./examples/readme/subcommands.py train --name integration")
         run("./examples/readme/regular_class.py")
