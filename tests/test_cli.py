@@ -888,6 +888,156 @@ class CliContractTests(unittest.TestCase):
         self.assertIn("--kwargs.workers", output.getvalue())
         self.assertEqual(dynamic_factory_calls, {"target": 1, "kwargs": 0})
 
+    def test_dynamic_help_is_static_at_the_root_and_expands_for_all_selector_sources(self):
+        sys.argv = ["program", "--help"]
+        output = StringIO()
+        with patch.object(msup.base, "load_callable", wraps=msup.base.load_callable) as load:
+            with redirect_stdout(output), self.assertRaises(SystemExit) as error:
+                cli({dynamic_command: "dynamic command", subcommand: "static command"})
+        self.assertEqual(error.exception.code, 0)
+        self.assertNotIn("--kwargs.workers", output.getvalue())
+        load.assert_not_called()
+        self.assertEqual(dynamic_factory_calls, {"target": 0, "kwargs": 0})
+
+        calls = {"target": 0}
+
+        def target_factory() -> Callable[..., Any]:
+            calls["target"] += 1
+            return dynamic_target
+
+        @dataclass
+        class HelpArgs:
+            target: Annotated[Callable[..., Any], CliArg(env="MSUP_DYNAMIC_HELP_TARGET")] = field(
+                default_factory=target_factory
+            )
+            kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = field(default_factory=dict)
+
+        def help_source_command(args: HelpArgs):
+            pass
+
+        reference = f"{__name__}.dynamic_target"
+        cases = [
+            (["--help"], None, 1),
+            (["--help", "--Args", f'{{"target": "{reference}"}}'], None, 0),
+            (["--help"], reference, 0),
+            (["--target", reference, "--help"], None, 0),
+            (["--help", "--target", reference], None, 0),
+        ]
+        try:
+            for argv, env_value, expected_calls in cases:
+                calls["target"] = 0
+                if env_value is None:
+                    os.environ.pop("MSUP_DYNAMIC_HELP_TARGET", None)
+                else:
+                    os.environ["MSUP_DYNAMIC_HELP_TARGET"] = env_value
+                sys.argv = ["program", *argv]
+                output = StringIO()
+                with redirect_stdout(output), self.assertRaises(SystemExit) as error:
+                    cli(help_source_command)
+                self.assertEqual(error.exception.code, 0)
+                self.assertIn("--kwargs.workers", output.getvalue())
+                self.assertEqual(calls["target"], expected_calls)
+        finally:
+            os.environ.pop("MSUP_DYNAMIC_HELP_TARGET", None)
+
+        @dataclass
+        class NoSelectorArgs:
+            target: Callable[..., Any]
+            kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = field(default_factory=dict)
+
+        def static_help_command(args: NoSelectorArgs):
+            pass
+
+        sys.argv = ["program", "static_help_command", "--help"]
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as error:
+            cli({static_help_command: "dynamic command"})
+        self.assertEqual(error.exception.code, 0)
+        self.assertNotIn("--kwargs.workers", output.getvalue())
+
+    def test_help_does_not_convert_environment_values_or_render_callable_addresses(self):
+        os.environ["MSUP_TEST_ENABLED"] = "not-a-boolean"
+        sys.argv = ["program", "--help"]
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as error:
+            cli(environment_bool_command)
+        self.assertEqual(error.exception.code, 0)
+        self.assertIn("not-a-", output.getvalue())
+
+        calls = {"child": 0}
+
+        def child_value() -> int:
+            calls["child"] += 1
+            return 1
+
+        @dataclass
+        class HelpChild:
+            value: int = field(default_factory=child_value)
+
+        @dataclass
+        class HelpOwner:
+            child: Annotated[HelpChild, CliArg(env="MSUP_HELP_CHILD")] = field(default_factory=HelpChild)
+
+        def help_owner_command(args: HelpOwner):
+            pass
+
+        try:
+            os.environ["MSUP_HELP_CHILD"] = "{}"
+            sys.argv = ["program", "--help"]
+            with redirect_stdout(StringIO()), self.assertRaises(SystemExit) as error:
+                cli(help_owner_command)
+            self.assertEqual(error.exception.code, 0)
+            self.assertEqual(calls["child"], 0)
+        finally:
+            os.environ.pop("MSUP_HELP_CHILD", None)
+
+        sys.argv = ["program", "--help"]
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as error:
+            cli(multiple_dynamic_command)
+        self.assertEqual(error.exception.code, 0)
+        self.assertNotIn("Default: <function", output.getvalue())
+        self.assertNotIn("0x", output.getvalue())
+
+    def test_dynamic_errors_preserve_paths_and_argparse_status(self):
+        with self.assertRaisesRegex(TypeError, "^target: No module named 'missing'"):
+            self.invoke(dynamic_command, ["--target", "missing.module.target"])
+
+        for argv in (
+            ["--kwargs.workers", "invalid", "--kwargs.limits.memory_gb", "4"],
+            ["--kwargs.unknown", "1"],
+        ):
+            with self.subTest(argv=argv), redirect_stderr(StringIO()), self.assertRaises(SystemExit) as error:
+                self.invoke(dynamic_command, argv)
+            self.assertEqual(error.exception.code, 2)
+
+        for argv, field_name in (
+            (["--Args", "not-json"], "args"),
+            (["--kwargs", "not-json"], "kwargs"),
+            (["--kwargs.limits", "not-json"], "kwargs.limits"),
+        ):
+            output = StringIO()
+            with self.subTest(argv=argv), redirect_stderr(output), self.assertRaises(SystemExit) as error:
+                self.invoke(dynamic_command, argv)
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn(field_name, output.getvalue())
+
+        def unresolved_target(value: int):
+            pass
+
+        unresolved_target.__annotations__["value"] = "UndefinedTargetAnnotation"
+
+        @dataclass
+        class UnresolvedTargetArgs:
+            target: Callable[..., Any] = unresolved_target
+            kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = field(default_factory=dict)
+
+        def unresolved_target_command(args: UnresolvedTargetArgs):
+            pass
+
+        with self.assertRaisesRegex(TypeError, "kwargs: selected target annotations cannot be resolved"):
+            self.invoke(unresolved_target_command, [])
+
     def test_dynamic_subcommands_select_and_dispatch_only_the_handler(self):
         sys.argv = ["program", "dynamic_command", "--kwargs.workers", "4", "--kwargs.limits.memory_gb", "5"]
         cli({dynamic_command: "dynamic command"})

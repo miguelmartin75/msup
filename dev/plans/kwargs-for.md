@@ -17,7 +17,7 @@ documentation, examples, and runner changes do not count.
 - Phase 1: Complete
 - Phase 2: Complete
 - Phase 3: Complete
-- Phase 4: Not started
+- Phase 4: Complete
 - Phase 5: Not started
 
 Update these fields while executing the plan. Use `In progress`, `Complete`, or
@@ -710,7 +710,7 @@ cumulative increase <= 340 lines
 
 ## Phase 4: Complete help, errors, and compatibility boundaries
 
-**Status:** Not started
+**Status:** Complete
 
 ### Implementation
 
@@ -739,6 +739,12 @@ cumulative increase <= 340 lines
 ### Validation
 
 Run `./run.py test`, `./run.py check`, and `git diff --check`.
+
+Completed validation: `./run.py test` passed 100 tests; `./run.py check`
+passed type, lint, and format checks; `git diff --check` passed. Production
+code is 1,443 lines (`msup/base.py` 741 and `msup/cli.py` 702), within the
+user-approved 1,445-line ceiling. Separate correctness and code-guidelines
+reviews approved the final worktree and found no unnecessary validation.
 
 ### Success criteria
 

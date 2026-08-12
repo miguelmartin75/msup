@@ -65,12 +65,9 @@ def error_exit(msg: str, code: int = 1):
 
 
 def _contains_relation(owner: type | Callable[..., Any]) -> bool:
-    if (
-        owner is Any
-        or (not inspect.isclass(owner) and not (inspect.isfunction(owner) or inspect.ismethod(owner)))
-        or owner.__module__ in ("builtins", "collections.abc")
-        or enum_type(owner) is not None
-    ):
+    if owner is Any or not (inspect.isclass(owner) or inspect.isfunction(owner) or inspect.ismethod(owner)):
+        return False
+    if owner.__module__ in ("builtins", "collections.abc") or enum_type(owner) is not None:
         return False
     for field in fields_or_init_kwargs(owner):
         field_type = effective_type(field.annotation, field.name)
@@ -103,11 +100,23 @@ def enum_argument_type(annotation: Any, field_name: str) -> Callable[[str], Any]
     return convert
 
 
+def _mapping_argument_type(field_name: str) -> Callable[[str], dict[str, Any]]:
+    def convert(value: str) -> dict[str, Any]:
+        try:
+            return from_dict_value(value, dict[str, Any], str, field_name)
+        except (AssertionError, AttributeError, OSError, ValueError) as error:
+            raise argparse.ArgumentTypeError(f"{field_name}: {error}") from error
+
+    return convert
+
+
 def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], Any]:
     annotation = effective_type(annotation, field_name)
     origin = annotation_origin(annotation)
-    if annotation is Any or _is_dynamic_owner(annotation) or origin in (dict, Callable2):
+    if annotation is Any or origin is Callable2:
         result = str
+    elif _is_dynamic_owner(annotation) or origin is dict:
+        result = _mapping_argument_type(field_name)
     elif origin is list:
         result = argument_type(get_collection_args(annotation)[0], field_name)
     elif origin is tuple:
@@ -157,17 +166,11 @@ def _field_help(field, name: str, force_no_default: bool = False) -> tuple[CliAr
     help_text = cli_arg.help
     default_help = ""
     if not cli_arg.secret and field.default is not MISSING and (not force_no_default or field.annotation is bool):
-        default_help = f"Default: {field.default}"
+        if not callable(field.default):
+            default_help = f"Default: {field.default}"
     env_value = os.getenv(cli_arg.env) if cli_arg.env else None
     if env_value is not None and not cli_arg.secret:
-        field_type = effective_type(field.annotation, name)
-        default_value = (
-            env_value
-            if annotation_origin(field_type) is Callable2
-            or (inspect.isclass(field_type) and _contains_relation(field_type))
-            else from_dict_value(env_value, field.annotation, str, name)
-        )
-        default_help = f"Default (using env: ${{{cli_arg.env}}}): {default_value}"
+        default_help = f"Default (using env: ${{{cli_arg.env}}}): {env_value}"
     if default_help:
         help_text = f"{help_text}. {default_help}" if help_text else default_help
     return cli_arg, help_text
@@ -310,11 +313,6 @@ def _has_descendant_source(owner, args, config, path) -> bool:
     )
 
 
-def has_nested_source(clazz: type, args, config: dict, prefix: str) -> bool:
-    """Whether config, environment, or CLI supplies a value below ``prefix``."""
-    return _has_descendant_source(clazz, args, config, tuple(prefix.split(".")) if prefix else ())
-
-
 def _from_cli_args(clazz: type, args, config: dict | None = None, prefix: str = ""):
     config = {} if config is None else config
     construct_args = {}
@@ -338,7 +336,7 @@ def _from_cli_args(clazz: type, args, config: dict | None = None, prefix: str = 
                 }
             if (
                 value is MISSING
-                and not has_nested_source(field_type, args, nested_config, name)
+                and not _has_descendant_source(field_type, args, nested_config, tuple(name.split(".")))
                 and (not is_dataclass(clazz) or has_default_value(f))
             ):
                 continue
@@ -407,23 +405,21 @@ def _source_tree(owner, args, config, path):
                 alias = cast(Any, owner).model_fields[field.name].validation_alias
                 if isinstance(alias, str) and field.name not in config and alias in config:
                     config[field.name] = config[alias]
-    result = dict(config)
+    has_value = False
     complete = True
     for field in fields:
         field_path = (*path, field.name)
         name = ".".join(field_path)
         sources = _field_sources(field, args, config, name)
-        field_type = effective_type(field.annotation, name)
-        if _is_dynamic_owner(field_type):
-            values = _source_values(sources, name)
-            nested, nested_complete = _source_tree(field_type, args, values, field_path)
-            if sources or nested:
-                result[field.name] = nested
+        if _is_dynamic_owner(field_type := effective_type(field.annotation, name)):
+            nested_value, nested_complete = _source_tree(field_type, args, _source_values(sources, name), field_path)
+            field_value = bool(sources) or nested_value
             complete = complete and nested_complete
-        elif sources:
-            result[field.name] = sources[-1]
-        complete = complete and field.name in result
-    return result, complete
+        else:
+            field_value = bool(sources)
+        has_value = has_value or field_value
+        complete = complete and field_value
+    return has_value, complete
 
 
 def _default_value(field: FieldSpec):
@@ -463,20 +459,24 @@ def _bootstrap_owner(owner, args, config, path, raw_trees, targets, target_field
             if sources:
                 result[field.name] = values
         elif dependent is not None:
-            value = sources[-1] if sources else _default_value(field)
-            if value is not MISSING:
+            try:
+                value = sources[-1] if sources else _default_value(field)
+                if value is MISSING:
+                    continue
                 target = from_dict_value(value, field.annotation, type(value), name)
-                targets[field_path] = target
-                try:
-                    target_fields[(*path, dependent.name)] = selected_target_fields(target)
-                except TypeError as error:
-                    raise TypeError(f"{'.'.join((*path, dependent.name))}: {error}") from error
-                result[field.name] = value
+            except (AttributeError, ImportError, ValueError) as error:
+                raise TypeError(f"{name}: {error}") from error
+            targets[field_path] = target
+            try:
+                target_fields[(*path, dependent.name)] = selected_target_fields(target)
+            except TypeError as error:
+                raise TypeError(f"{'.'.join((*path, dependent.name))}: {error}") from error
+            result[field.name] = value
         elif _is_dynamic_owner(field_type):
             nested_config: dict[str, Any] = {}
             contains_relation = _contains_relation(field_type)
             authoritative = any(_is_dynamic_owner(type(source)) for source in sources)
-            source_values, complete = _source_tree(field_type, args, _source_values(sources, name), field_path)
+            _, complete = _source_tree(field_type, args, _source_values(sources, name), field_path)
             default = _default_value(field) if contains_relation and not authoritative and not complete else MISSING
             source_present = bool(sources) or (default is not MISSING and default is not None)
             explicit_none = bool(sources) and sources[-1] is None

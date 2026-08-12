@@ -102,8 +102,6 @@ def is_pydantic_model(candidate: type | object) -> bool:
     elif PydanticV1BaseModel is not None and issubclass(clazz, PydanticV1BaseModel):
         raise TypeError(f"Pydantic v1 models are not supported: {clazz}")
     elif issubclass(clazz, PydanticBaseModel):
-        if not hasattr(clazz, "model_fields"):
-            raise TypeError(f"Pydantic v1 models are not supported: {clazz}")
         result = True
     else:
         result = False
@@ -390,12 +388,14 @@ def _conversion_annotation_supported(annotation: Any) -> bool:
 def selected_target_fields(target: type | Callable[..., Any]) -> list[FieldSpec]:
     """Reflects a selected target's supported explicit signature without invoking it."""
 
-    is_function_or_method = inspect.isfunction(target) or inspect.ismethod(target)
-    if not inspect.isclass(target) and not is_function_or_method:
+    if not (inspect.isclass(target) or inspect.isfunction(target) or inspect.ismethod(target)):
         raise TypeError(f"{target}: selected targets must be classes, functions, or methods")
 
     inspected_target = target.__init__ if inspect.isclass(target) else target
-    hints = get_type_hints(inspected_target, include_extras=True)
+    try:
+        hints = get_type_hints(inspected_target, include_extras=True)
+    except (AttributeError, NameError, SyntaxError, TypeError) as error:
+        raise TypeError(f"selected target annotations cannot be resolved: {error}") from error
     result = []
     for name, parameter in inspect.signature(inspected_target).parameters.items():
         if inspect.isclass(target) and name in ("self", "cls"):

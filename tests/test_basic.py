@@ -609,6 +609,11 @@ class BasicTests(unittest.TestCase):
         def unsupported(values: set[int]) -> None:
             pass
 
+        def unresolved(values: int) -> None:
+            pass
+
+        unresolved.__annotations__["values"] = "UndefinedTargetAnnotation"
+
         class CallableInstance:
             def __call__(self, value: int) -> None:
                 pass
@@ -621,6 +626,7 @@ class BasicTests(unittest.TestCase):
             (variadic_positional, "cannot use \\*args"),
             (variadic_keyword, "cannot use \\*\\*kwargs"),
             (unsupported, "unsupported selected target annotation"),
+            (unresolved, "selected target annotations cannot be resolved"),
             (CallableInstance(), "selected targets must be classes, functions, or methods"),
             (3, "selected targets must be classes, functions, or methods"),
         ]
