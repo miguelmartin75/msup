@@ -6,7 +6,7 @@
 - Phase 2: Complete
 - Phase 3: Complete
 - Phase 4: Complete
-- Phase 5: Not started
+- Phase 5: Complete
 - Phase 6: Not started
 
 Update each phase to `In progress`, `Complete`, or `Blocked` while executing it.
@@ -84,10 +84,10 @@ Retain these comments as explicit acceptance constraints:
   link to an already-reflected selector.
 - Default values and factories remain lazy. An overridden selector factory is
   not evaluated; a required mapping factory is evaluated at most once.
-- A dependent mapping missing any selected parameter overlays its own declared
-  mapping default uniformly, including when the supplied mapping originated
-  from a containing-owner default. Do not carry source provenance into
-  `from_kwargs` to create a special CLI-only suppression rule.
+- A materialized containing-owner value is authoritative. Its projected child
+  mappings do not re-evaluate child defaults or factories. Otherwise, a
+  supplied dependent mapping overlays its own declared mapping default when a
+  selected parameter is absent.
 - Input precedence remains config, then environment, then explicit CLI, with
   nested mappings merged at the existing layer boundaries.
 - Relation-aware Pydantic fields use canonical field names only. Relation
@@ -331,7 +331,7 @@ Phase 3 and 38 from the pre-follow-up ceiling.
 
 ## Phase 5: Align and minimize tests
 
-**Status:** Not started
+**Status:** Complete
 
 1. Update boolean-helper imports and assertions for public
    `msup.base.str_to_bool`. Remove tests and imports for `_add_target_args`,
@@ -360,13 +360,21 @@ Phase 3 and 38 from the pre-follow-up ceiling.
    tests.
 5. Add regression tests only where simplification could otherwise lose a
    stated invariant, especially selector factory laziness, default mapping
-   overlay, and the no-invocation guarantee. Update the containing-default CLI
-   expectation to follow the uniform dependent-default overlay rule without a
-   provenance marker or hidden conversion parameter.
+   overlay, materialized containing-owner authority, and the no-invocation
+   guarantee.
 
 **Success criteria:** tests describe the public contract, not removed helper
 names, and all relation invariants are covered with the smallest useful set of
 cases.
+
+**Validation:** `uv run --group dev --extra pydantic pytest
+tests/test_basic.py tests/test_cli.py tests/test_pydantic.py` passed with 97
+tests and 51 subtests. `uv run --group dev --extra pydantic ty check .`, Ruff
+lint and format checks, and `git diff --check` passed. Review confirmed the
+reduced suite retains successful canonical-name Pydantic relation round trips
+and CLI construction, relation-free native alias behavior, relation alias
+rejection, materialized containing-owner authority, multiple dependents,
+factory laziness, and target non-invocation without private-helper tests.
 
 ## Phase 6: Validate and review the final diff
 

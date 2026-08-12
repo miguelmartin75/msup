@@ -539,12 +539,11 @@ class BasicTests(unittest.TestCase):
         cases = [
             (DuplicateMetadata, "value", "at most one CliArg"),
             (WrongDependentType, "kwargs", "dict\\[str, Any\\].*Kwargs"),
-            (MissingSelector, "kwargs", "does not exist"),
-            (SelfSelector, "kwargs", "different selector"),
-            (ForwardSelector, "kwargs", "must precede"),
+            (MissingSelector, "kwargs", "is not a preceding field"),
+            (SelfSelector, "kwargs", "is not a preceding field"),
+            (ForwardSelector, "kwargs", "is not a preceding field"),
             (NonCallableSelector, "kwargs", "must be annotated as Callable"),
-            (ReusedSelector, "second", "already has a kwargs field"),
-            (RelationSelector, "other", "cannot be a kwargs field"),
+            (RelationSelector, "other", "must be annotated as Callable"),
         ]
         for owner, field_name, message in cases:
             with self.subTest(owner=owner):
@@ -552,6 +551,15 @@ class BasicTests(unittest.TestCase):
                     fields_or_init_kwargs(owner)
         with self.assertRaisesRegex(TypeError, "WrongDependentType.kwargs.*Kwargs"):
             from_dict(WrongDependentType, {})
+        reused_fields = fields_or_init_kwargs(ReusedSelector)
+        self.assertIs(reused_fields[1].kwargs_relation, reused_fields[0])
+        self.assertIs(reused_fields[2].kwargs_relation, reused_fields[0])
+        reused = from_dict(
+            ReusedSelector,
+            {"target": relation_target, "first": {"value": "1"}, "second": {"value": "2"}},
+        )
+        self.assertEqual(reused.first, {"value": 1})
+        self.assertEqual(reused.second, {"value": 2})
         value = from_dict(RegularRelationOwner, {"target": relation_target, "kwargs": {"value": "3"}})
         self.assertIs(value.target, relation_target)
         self.assertEqual(value.kwargs, {"value": 3})

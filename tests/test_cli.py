@@ -1,5 +1,3 @@
-import argparse
-from argparse import Namespace
 import os
 import sys
 import tempfile
@@ -12,8 +10,8 @@ from typing import Annotated, Any, Callable, Optional, cast
 from unittest.mock import patch
 
 import msup.base
-from msup.base import Kwargs, Metadata
-from msup.cli import CliArg, _add_target_args, _bootstrap_owner, _from_cli_args, argument_type, cli, strtobool
+from msup.base import Kwargs, Metadata, str_to_bool
+from msup.cli import CliArg, argument_type, cli
 
 
 received = []
@@ -560,8 +558,8 @@ class CliContractTests(unittest.TestCase):
                 )
                 self.assertEqual(result, PrimitiveArgs(count=4, ratio=2.5, name="updated", enabled=expected))
 
-    def test_argument_type_is_public_and_uses_strtobool(self):
-        self.assertIs(argument_type(bool, "enabled"), strtobool)
+    def test_argument_type_uses_the_public_boolean_converter(self):
+        self.assertIs(argument_type(bool, "enabled"), str_to_bool)
         self.assertTrue(argument_type(bool, "enabled")("yes"))
 
     def test_cliarg_accepts_no_short_option_and_is_immutable(self):
@@ -707,22 +705,7 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(result.job.kwargs, {"workers": 3, "limits": DynamicLimits(4)})
         self.assertEqual(result.job.mode, "factory")
         self.assertEqual(containing_factory_calls, 1)
-
-        containing_factory_calls = 0
-        raw_trees = {}
-        targets = {}
-        target_fields = {}
-        _bootstrap_owner(
-            FactoryNestedDynamicArgs,
-            Namespace(),
-            {"job": DynamicArgs(target=dynamic_target, kwargs={"workers": 3, "limits": DynamicLimits(4)})},
-            (),
-            raw_trees,
-            targets,
-            target_fields,
-        )
-        self.assertEqual(containing_factory_calls, 0)
-        self.assertIn(("job", "kwargs"), target_fields)
+        self.assertEqual(dynamic_factory_calls, {"target": 0, "kwargs": 2})
 
     def test_direct_handlers_and_classes_keep_selected_targets_uninvoked(self):
         target, kwargs = self.invoke(
@@ -869,15 +852,6 @@ class CliContractTests(unittest.TestCase):
             self.invoke(required_optional_dynamic_command, [])
         self.assertEqual(error.exception.code, 3)
         self.assertIn("--job", output.getvalue())
-
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--kwargs.workers")
-        with self.assertRaises(argparse.ArgumentError):
-            _add_target_args(parser, msup.base.selected_target_fields(dynamic_target), ("kwargs",))
-        parser = argparse.ArgumentParser(conflict_handler="resolve")
-        parser.add_argument("--kwargs.workers")
-        _add_target_args(parser, msup.base.selected_target_fields(dynamic_target), ("kwargs",))
-        self.assertEqual(parser.parse_args(["--kwargs.workers", "4"]).__dict__["kwargs.workers"], 4)
 
     def test_selected_target_help_materializes_only_the_selector(self):
         sys.argv = ["program", "--help"]
@@ -1192,10 +1166,6 @@ class CliContractTests(unittest.TestCase):
 
     def test_nested_dataclass_preserves_declared_default_without_sources(self):
         self.assertEqual(self.invoke(default_nested_command, []), DefaultNestedArgs(child=ChildArgs(count=2)))
-
-    def test_nested_dataclass_accepts_dataclass_configuration_values(self):
-        result = _from_cli_args(NestedArgs, Namespace(), {"child": ChildArgs(count=6)})
-        self.assertEqual(result, NestedArgs(child=ChildArgs(count=6)))
 
     def test_nonfinal_positional_collections_are_rejected(self):
         with self.assertRaisesRegex(TypeError, "values: positional collection arguments must be declared last"):
