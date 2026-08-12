@@ -5,7 +5,7 @@
 - Phase 1: Complete
 - Phase 2: Complete
 - Phase 3: Complete
-- Phase 4: Not started
+- Phase 4: Complete
 - Phase 5: Not started
 - Phase 6: Not started
 
@@ -44,8 +44,11 @@ Retain these comments as explicit acceptance constraints:
   `to_dict`, `from_kwargs`, and analogous consumers.
 - `validation_value`, `validation_paths`, and `set_validation_value` are design
   red flags. Remove them rather than moving Pydantic alias traversal into
-  `FieldSpec`; native alias handling must stay narrowly scoped to active
-  relation fields.
+  `FieldSpec`.
+- Do not support Pydantic validation aliases for relation handling, including
+  string aliases, `AliasPath`, and `AliasChoices`. Use canonical field names
+  for relation-aware models and leave relation-free models to native Pydantic
+  validation.
 - Production LOC reduction must come from simpler algorithms and deleted
   state, not compressed forward declarations, deleted useful docstrings, or
   formatting changes.
@@ -81,10 +84,15 @@ Retain these comments as explicit acceptance constraints:
   link to an already-reflected selector.
 - Default values and factories remain lazy. An overridden selector factory is
   not evaluated; a required mapping factory is evaluated at most once.
+- A dependent mapping missing any selected parameter overlays its own declared
+  mapping default uniformly, including when the supplied mapping originated
+  from a containing-owner default. Do not carry source provenance into
+  `from_kwargs` to create a special CLI-only suppression rule.
 - Input precedence remains config, then environment, then explicit CLI, with
   nested mappings merged at the existing layer boundaries.
-- Pydantic v2 validation aliases retain their native behavior. Relation code
-  adds no blanket string-only alias restriction.
+- Relation-aware Pydantic fields use canonical field names only. Relation
+  handling does not interpret string aliases, `AliasPath`, or `AliasChoices`;
+  relation-free Pydantic models still delegate directly to native validation.
 - `kwargs_for` supports `--Args`, nested models, direct functions,
   subcommands, help output, and selected-target dotted options. It never
   invokes the selected callable while parsing, converting, or serializing.
@@ -269,7 +277,7 @@ state and duplicate root reflection. Combined production LOC is 1,441.
 
 ## Phase 4: Reduce base consumers to baseline-shaped relation branches
 
-**Status:** Not started
+**Status:** Complete
 
 1. Simplify `to_dict` to the `abca9b07` field loop and value lookup shape.
    Ordinary fields delegate directly to `to_dict_value`; the only ordinary
@@ -289,24 +297,37 @@ state and duplicate root reflection. Combined production LOC is 1,441.
    multiple dependents, nested relation owners, full diagnostic paths, and
    target non-invocation.
 4. Remove `FieldSpec.validation_paths`, `FieldSpec.validation_value`, and
-   `FieldSpec.set_validation_value`. Implement only the Pydantic alias
-   read/write behavior required for active selector, dependent, and nested
-   relation fields. Support string aliases, `AliasPath`, and ordered
-   `AliasChoices` without creating a general field-input framework.
+   `FieldSpec.set_validation_value`. Do not replace them with an alias utility
+   or other field-input framework. Relation-aware Pydantic conversion uses
+   canonical field names only and does not support string aliases,
+   `AliasPath`, or `AliasChoices`. Keep relation-free Pydantic conversion on
+   its native direct `model_validate` path.
 5. Simplify `from_dict` and CLI integration after the base loop is reduced so
    they do not reconstruct reflection work or shift the removed complexity to
-   another layer. Re-run the public CLI behavior suite and Pydantic alias
-   probes after removing the `FieldSpec` alias state.
+   another layer. Re-run the public CLI behavior suite after removing the
+   `FieldSpec` alias state.
 6. Run a correctness review and a separate simplification review. Measure
    semantic production LOC with public documentation and readable declarations
    intact.
 
 **Success criteria:** `to_dict` and `from_kwargs` visibly follow their baseline
 field loops with small relation branches; the three validation-path
-declarations are absent; ordinary Pydantic fields remain native; selected
-targets are inspected once and never invoked; all relation, alias, laziness,
-round-trip, and CLI behavior remains intact; and production LOC remains below
-1,443 without cosmetic compression.
+declarations are absent; ordinary relation-free Pydantic models remain native;
+selected targets are inspected once and never invoked; canonical relation,
+laziness, round-trip, and CLI behavior remains intact; and production LOC
+remains below 1,443 without cosmetic compression.
+
+**Validation:** `uv run --group dev --extra pydantic pytest tests/test_basic.py
+-k 'not kwargs_relation_schemas_reject_invalid_links'` passed with 25 tests,
+1 deselected, and 17 subtests. The canonical-name Pydantic slice passed 15
+tests with the three obsolete alias-support tests deselected. The compatibility
+shim run of `tests/test_cli.py` passed 55 tests and 22 subtests; its remaining
+private-helper assertion is removed in Phase 5. `uv run --group dev --extra
+pydantic ty check msup`, Ruff lint and format checks, and `git diff --check`
+passed. Correctness review accepted canonical-only relation fields, uniform
+dependent-default overlay, one selected-signature inspection per selector,
+and target non-invocation. Combined production LOC is 1,405, down 36 from
+Phase 3 and 38 from the pre-follow-up ceiling.
 
 ## Phase 5: Align and minimize tests
 
@@ -317,11 +338,10 @@ round-trip, and CLI behavior remains intact; and production LOC remains below
    `_bootstrap_owner`, `_kwargs_from_fields`, `_construct_owner`,
    `_from_kwargs`, `_RAW_MATERIALIZED`, and any new implementation-only
    replacement.
-2. Remove the Pydantic test expecting `AliasPath` and `AliasChoices` rejection.
-   Add positive relation-conversion coverage through string aliases,
-   `AliasPath`, and ordered `AliasChoices`, including conflicting canonical and
-   alias inputs, so the converted winning value is the one native Pydantic
-   receives. Change self and forward relation tests to expect the common
+2. Replace the old reflection-time alias-type assertions with focused boundary
+   tests showing that relation-aware Pydantic fields reject string aliases,
+   `AliasPath`, and `AliasChoices`, while relation-free Pydantic models retain
+   native alias behavior. Change self and forward relation tests to expect the common
    preceding-selector lookup failure. Remove the reused selector rejection
    test and add a behavior test showing two dependent fields can link to the
    same preceding selector. Keep a relation field used as a selector only as
@@ -332,7 +352,7 @@ round-trip, and CLI behavior remains intact; and production LOC remains below
    annotations; invalid dependent annotation, missing preceding selector, and
    non-Callable selector; selected signature validation; no target invocation;
    nested and multiple relations; JSON/dict round trips; defaults and lazy
-   factories; and native Pydantic aliases.
+   factories; and canonical Pydantic relation fields.
 4. Preserve CLI coverage for config/environment/CLI precedence, whole kwargs
    mappings plus selected dotted options, `--Args`, nested relation owners,
    help, subcommands, positional rules, and target-parameter validation.
@@ -340,7 +360,9 @@ round-trip, and CLI behavior remains intact; and production LOC remains below
    tests.
 5. Add regression tests only where simplification could otherwise lose a
    stated invariant, especially selector factory laziness, default mapping
-   overlay, and the no-invocation guarantee.
+   overlay, and the no-invocation guarantee. Update the containing-default CLI
+   expectation to follow the uniform dependent-default overlay rule without a
+   provenance marker or hidden conversion parameter.
 
 **Success criteria:** tests describe the public contract, not removed helper
 names, and all relation invariants are covered with the smallest useful set of

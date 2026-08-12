@@ -18,7 +18,10 @@ def to_kwargs(clazz: type | Callable[..., Any], x: Any) -> dict[str, Any]: ...
 def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = None) -> T: ...
 def kwargs_from_dict(target: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str = "kwargs") -> dict[str, Any]: ...
 def from_kwargs(
-    owner: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str | None = None
+    owner: type | Callable[..., Any],
+    values: Mapping[str, Any],
+    *,
+    field_name: str | None = None,
 ) -> dict[str, Any]: ...
 def to_dict(
     x: Any, type_class: type | Callable[..., Any] | None = None, *, field_name: str | None = None
@@ -74,52 +77,6 @@ class FieldSpec:
     default: Any = MISSING
     default_factory: Any = MISSING
     kwargs_relation: "FieldSpec | None" = None
-    validation_paths: list[list[str | int]] | None = None
-
-    def validation_value(self, values: Mapping[str, Any]) -> tuple[Any, list[str | int]]:
-        """Returns the first accepted input value and its native validation path."""
-
-        paths = self.validation_paths or [[self.name]]
-        result: Any = MISSING
-        winning_path = paths[0]
-        for path in paths:
-            candidate: Any = values
-            for key in path:
-                try:
-                    candidate = candidate[key]
-                except (KeyError, IndexError, TypeError):
-                    candidate = MISSING
-                    break
-            if candidate is not MISSING:
-                result, winning_path = candidate, path
-                break
-        return result, winning_path
-
-    def set_validation_value(self, values: dict[str, Any], value: Any, path: list[str | int]) -> None:
-        """Writes a converted value without replacing unrelated validation input."""
-
-        destination: Any = values
-        for index, key in enumerate(path):
-            container = cast(Any, destination)
-            if isinstance(destination, list):
-                list_index = cast(int, key)
-                while len(destination) < (list_index + 1 if list_index >= 0 else -list_index):
-                    destination.append(None)
-            if index == len(path) - 1:
-                container[key] = value
-                continue
-            child = container.get(key) if isinstance(destination, Mapping) else container[key]
-            child = (
-                dict(child)
-                if isinstance(child, Mapping)
-                else list(child)
-                if isinstance(child, list)
-                else []
-                if isinstance(path[index + 1], int)
-                else {}
-            )
-            container[key] = child
-            destination = child
 
 
 def unwrap_annotated(annotation: Any) -> tuple[Any, list[Any]]:
@@ -223,17 +180,7 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
             )
             default_factory = model_field.default_factory if model_field.default_factory is not None else MISSING
             annotation, annotations = unwrap_annotated(hints.get(name, model_field.annotation))
-            alias = model_field.validation_alias
-            paths: list[list[str | int]] = []
-            if cast(Any, target).model_config.get("validate_by_alias", True) and alias is not None:
-                aliases = alias if isinstance(alias, str) else alias.convert_to_aliases()
-                paths = cast(
-                    list[list[str | int]],
-                    [[aliases]] if isinstance(aliases, str) else aliases if isinstance(aliases[0], list) else [aliases],
-                )
-            if alias is None or cast(Any, target).model_config.get("validate_by_name", False):
-                paths.append([name])
-            result.append(FieldSpec(name, annotation, annotations, default, default_factory, validation_paths=paths))
+            result.append(FieldSpec(name, annotation, annotations, default, default_factory))
     else:
         inspected_target = target.__init__ if inspect.isclass(target) else target
         hints = get_type_hints(inspected_target, include_extras=True)
@@ -265,6 +212,15 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
                 raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} must be annotated as Callable")
             field.kwargs_relation = selector
         prior_fields[field.name] = field
+    if is_pydantic_model(target):
+        model_fields = cast(Any, target).model_fields
+        for field in result:
+            relation = field.kwargs_relation
+            if relation is not None and (
+                model_fields[field.name].validation_alias is not None
+                or model_fields[relation.name].validation_alias is not None
+            ):
+                raise TypeError(f"{owner_name}.{field.name}: kwargs_for fields do not support validation aliases")
     return result
 
 
@@ -634,6 +590,7 @@ def to_dict(
     mapping = x if isinstance(x, Mapping) else None
     owner = type(x) if type_class is None else type_class
     owner_name = field_name or cast(Any, owner).__qualname__
+    selected_fields = {}
     for f in fields_or_init_kwargs(owner):
         value = mapping[f.name] if mapping is not None and f.name in mapping else getattr(x, f.name, MISSING)
         if value is MISSING:
@@ -654,27 +611,27 @@ def to_dict(
                 raise TypeError(f"{field_name}: missing selector {f.kwargs_relation.name!r}")
             if not isinstance(value, Mapping):
                 raise TypeError(f"{field_name}: expected a mapping, got {type(value)}")
-            parameters = selected_target_fields(target)
-            unknown = next((name for name in value if all(parameter.name != name for parameter in parameters)), None)
+            parameters = selected_fields.get(f.kwargs_relation.name)
+            if parameters is None:
+                parameters = selected_fields[f.kwargs_relation.name] = selected_target_fields(target)
+            names = {parameter.name for parameter in parameters}
+            unknown = next((name for name in value if name not in names), None)
             if unknown is not None:
                 raise TypeError(f"{field_name}.{unknown}: unknown target parameter")
-            serialized_values = {}
+            converted = {}
             for parameter in parameters:
-                parameter_name = f"{field_name}.{parameter.name}"
                 if parameter.name in value:
-                    raw_value = value[parameter.name]
-                    parameter_value = from_dict_value(
-                        raw_value, parameter.annotation or type(raw_value), type(raw_value), parameter_name
+                    raw = value[parameter.name]
+                    annotation = parameter.annotation or type(raw)
+                    item = from_dict_value(raw, annotation, type(raw), f"{field_name}.{parameter.name}")
+                    converted[parameter.name] = (
+                        to_dict(item, field_name=f"{field_name}.{parameter.name}")
+                        if is_structured_model(item)
+                        else to_dict_value(item, annotation)
                     )
-                    if parameter_value is not None and is_structured_model(parameter_value):
-                        serialized_values[parameter.name] = to_dict(parameter_value, field_name=parameter_name)
-                    else:
-                        serialized_values[parameter.name] = to_dict_value(
-                            parameter_value, parameter.annotation or type(parameter_value)
-                        )
                 elif parameter.default is MISSING:
-                    raise TypeError(f"{parameter_name}: missing required target parameter")
-            result[f.name] = serialized_values
+                    raise TypeError(f"{field_name}.{parameter.name}: missing required target parameter")
+            result[f.name] = converted
     return result
 
 
@@ -717,7 +674,10 @@ def kwargs_from_dict(
 
 
 def from_kwargs(
-    owner: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str | None = None
+    owner: type | Callable[..., Any],
+    values: Mapping[str, Any],
+    *,
+    field_name: str | None = None,
 ) -> dict[str, Any]:
     """Converts an owner's linked fields without invoking a function owner."""
 
@@ -726,21 +686,33 @@ def from_kwargs(
         raise TypeError(f"{owner_name}: expected a mapping, got {type(values)}")
     field_info = fields_or_init_kwargs(owner)
     pydantic_owner = is_pydantic_model(owner)
-    result = dict(values) if pydantic_owner else {}
-    converted_fields: dict[str, Any] = {}
-    dependents = {field.kwargs_relation.name for field in field_info if field.kwargs_relation is not None}
+    result: dict[str, Any] = deepcopy(dict(values)) if pydantic_owner else {}
+    selectors: dict[str, tuple[Any, list[FieldSpec]]] = {}
     for f in field_info:
         current_field_name = f"{owner_name}.{f.name}"
-        value, path = f.validation_value(values)
+        value = values.get(f.name, MISSING)
         if f.kwargs_relation is not None:
             supplied = {} if value is MISSING else value
             if not isinstance(supplied, Mapping):
                 raise TypeError(f"{current_field_name}: expected a mapping, got {type(supplied)}")
-            target = converted_fields[f.kwargs_relation.name]
-            try:
-                parameters = selected_target_fields(target)
-            except TypeError as error:
-                raise TypeError(f"{current_field_name}: {error}") from error
+            relation = f.kwargs_relation
+            if relation.name not in selectors:
+                target = values.get(relation.name, MISSING)
+                if target is MISSING:
+                    if relation.default is not MISSING:
+                        target = deepcopy(relation.default)
+                    elif relation.default_factory is not MISSING:
+                        target = relation.default_factory()
+                    else:
+                        raise TypeError(f"{owner_name}.{relation.name}: missing selector")
+                target = from_dict_value(target, relation.annotation, type(target), f"{owner_name}.{relation.name}")
+                try:
+                    parameters = selected_target_fields(target)
+                except TypeError as error:
+                    raise TypeError(f"{current_field_name}: {error}") from error
+                selectors[relation.name] = target, parameters
+                result[relation.name] = target
+            _, parameters = selectors[relation.name]
             if any(parameter.name not in supplied for parameter in parameters):
                 if f.default is not MISSING:
                     default = deepcopy(f.default)
@@ -767,19 +739,6 @@ def from_kwargs(
                     )
                 elif parameter.default is MISSING:
                     raise TypeError(f"{current_field_name}.{parameter.name}: missing required target parameter")
-            converted_fields[f.name] = converted
-        elif f.name in dependents:
-            if value is not MISSING:
-                converted = from_dict_value(value, f.annotation or type(value), type(value), current_field_name)
-            elif f.default is not MISSING:
-                default = deepcopy(f.default)
-                converted = from_dict_value(default, f.annotation, type(default), current_field_name)
-            elif f.default_factory is not MISSING:
-                value = f.default_factory()
-                converted = from_dict_value(value, f.annotation, type(value), current_field_name)
-            else:
-                raise TypeError(f"{current_field_name}: missing selector")
-            converted_fields[f.name] = converted
         elif value is not MISSING:
             field_type = get_optional_type(f.annotation) or normalize_annotation(f.annotation) or type(value)
             if inspect.isclass(field_type) and any(
@@ -794,14 +753,10 @@ def from_kwargs(
                 converted = from_dict_value(value, f.annotation or field_type, type(value), current_field_name)
             else:
                 continue
-            converted_fields[f.name] = converted
         else:
             continue
 
-        if pydantic_owner:
-            f.set_validation_value(result, converted, path)
-        else:
-            result[f.name] = converted
+        result[f.name] = converted
     return result
 
 

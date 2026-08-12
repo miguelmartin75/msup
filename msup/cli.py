@@ -254,12 +254,13 @@ def has_nested_source(clazz: type, args, config: dict, prefix: str) -> bool:
         name = f"{prefix}.{f.name}" if prefix else f.name
         annotation = f.annotation
         cli_arg = cliarg_from_annotations(f.annotations)
-        if f.name in config or (cli_arg and cli_arg.env and os.getenv(cli_arg.env) is not None):
+        config_value = config.get(f.name, MISSING)
+        if config_value is not MISSING or (cli_arg and cli_arg.env and os.getenv(cli_arg.env) is not None):
             return True
         if hasattr(args, name) or hasattr(args, f"{name}_pos"):
             return True
         if is_structured_model(effective_type(annotation, name)) and has_nested_source(
-            effective_type(annotation, name), args, config.get(f.name, {}), name
+            effective_type(annotation, name), args, config_value if isinstance(config_value, dict) else {}, name
         ):
             return True
     return False
@@ -322,7 +323,7 @@ def _bootstrap(args, config, path, fields_by_path, active_paths, cache, targets,
         field_path = (*path, field.name)
         name = ".".join(field_path)
         cli_arg = cliarg_from_annotations(field.annotations)
-        value = field.validation_value(config)[0]
+        value = config.get(field.name, MISSING)
         env_value = os.getenv(cli_arg.env) if cli_arg and cli_arg.env else None
         value = getattr(args, name, env_value if env_value is not None else value)
         if field.name in dependents:
@@ -350,8 +351,7 @@ def _bootstrap(args, config, path, fields_by_path, active_paths, cache, targets,
             nested = dict(value) if isinstance(value, Mapping) else {}
             child_fields = fields_by_path[field_path]
             complete = all(
-                child.validation_value(nested)[0] is not MISSING or hasattr(args, ".".join((*field_path, child.name)))
-                for child in child_fields
+                child.name in nested or hasattr(args, ".".join((*field_path, child.name))) for child in child_fields
             )
             if not complete and (field.default is not MISSING or field.default_factory is not MISSING):
                 default = deepcopy(field.default) if field.default is not MISSING else field.default_factory()
@@ -377,7 +377,7 @@ def _from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None
         annotation = f.annotation
         cli_arg = cliarg_from_annotations(f.annotations)
         field_type = effective_type(annotation, name)
-        config_value = f.validation_value(config)[0]
+        config_value = config.get(f.name, MISSING)
         env_value = os.getenv(cli_arg.env) if cli_arg and cli_arg.env else None
         if hasattr(args, name):
             cli_value = getattr(args, name)
@@ -402,8 +402,7 @@ def _from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None
                         if f.default_factory is not MISSING
                         else {}
                     )
-                if isinstance(cache[field_path], Mapping):
-                    values = {**cache[field_path], **values}
+                values = {**cache[field_path], **values}
             parameter_names = {parameter.name for parameter in targets[field_path]}
             unknown = next((key for key in values if key not in parameter_names), None)
             if unknown is not None:
@@ -465,12 +464,15 @@ def _from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None
                 error_exit(f"--{name} not provided (default value DNE)", 3)
     if pydantic_owner:
         values = deepcopy(config)
-        for field in fields:
-            if field.name in construct_args:
-                _, validation_path = field.validation_value(config)
-                field.set_validation_value(values, construct_args[field.name], validation_path)
-        return clazz.model_validate(values)
-    return clazz(**construct_args) if inspect.isclass(clazz) else construct_args
+        values.update(construct_args)
+        construct_args = values
+    return (
+        clazz.model_validate(construct_args)
+        if pydantic_owner
+        else clazz(**construct_args)
+        if inspect.isclass(clazz)
+        else construct_args
+    )
 
 
 def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | None = None) -> dict:
@@ -592,7 +594,14 @@ def cli(
                 relation_path[:index] for relation_path in relation_paths for index in range(1, len(relation_path) + 1)
             }
             _bootstrap(
-                args, config, (), fields_by_path, active_paths, cache, targets, "--help" in raw_args or "-h" in raw_args
+                args,
+                config,
+                (),
+                fields_by_path,
+                active_paths,
+                cache,
+                targets,
+                "--help" in raw_args or "-h" in raw_args,
             )
             for path in list(targets):
                 _target_options(command_parser, targets, path)
