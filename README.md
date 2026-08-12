@@ -166,9 +166,9 @@ Relations work in dataclasses, regular Python class constructors, Pydantic v2
 models, and direct functions or methods. They can be nested in statically known
 dataclass, regular-class, or Pydantic v2 owners. Pydantic v2 receives one native
 `model_validate` call after its linked selector and kwargs are converted, so its
-normal validation remains active. Simple string validation aliases work for
-linked Pydantic fields. Pydantic v1 and complex Pydantic validation aliases are
-not supported for linked fields.
+normal validation remains active. Linked Pydantic selector and kwargs fields
+must use their canonical names; string aliases, `AliasPath`, and `AliasChoices`
+are not supported. Pydantic v1 is also not supported for linked fields.
 
 The selected target may be a function, method, or class with annotated
 positional-or-keyword or keyword-only parameters. Its body or constructor is

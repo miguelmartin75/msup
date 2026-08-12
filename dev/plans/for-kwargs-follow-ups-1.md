@@ -7,7 +7,7 @@
 - Phase 3: Complete
 - Phase 4: Complete
 - Phase 5: Complete
-- Phase 6: Not started
+- Phase 6: Complete
 
 Update each phase to `In progress`, `Complete`, or `Blocked` while executing it.
 Record the exact validation command and result beneath every completed phase.
@@ -378,7 +378,7 @@ factory laziness, and target non-invocation without private-helper tests.
 
 ## Phase 6: Validate and review the final diff
 
-**Status:** Not started
+**Status:** Complete
 
 1. Run `./run.py check`.
 2. Run focused suites first:
@@ -396,6 +396,13 @@ factory laziness, and target non-invocation without private-helper tests.
 passes, and the final production diff is limited to necessary relation support
 and the shared boolean helper. The combined production LOC is below 1,443
 lines.
+
+**Validation:** `./run.py check`, `./run.py test`, and `./run.py examples`
+passed. The full suite passed 97 tests and 51 subtests. Final review confirmed
+the canonical-name-only Pydantic relation boundary, one selected-signature
+inspection per selector, target non-invocation, removal of alias traversal
+state and private-helper tests, and separate commits per phase. Combined
+production LOC is 1,405, which is 38 lines below the 1,443-line ceiling.
 
 ## Review-comment disposition
 
