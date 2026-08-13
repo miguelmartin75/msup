@@ -781,19 +781,6 @@ class CliContractTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "kwargs: missing selector 'target'"):
             self.invoke(missing_selector_command, [])
 
-        def invalid_target(value):
-            pass
-
-        @dataclass
-        class InvalidTargetArgs:
-            target: Callable[..., Any] = invalid_target
-            kwargs: Annotated[Kwargs, CliArg(kwargs_for="target")] = field(default_factory=dict)
-
-        def invalid_target_command(args: InvalidTargetArgs):
-            pass
-
-        with self.assertRaisesRegex(TypeError, "kwargs: value: selected target parameters must have an annotation"):
-            self.invoke(invalid_target_command, [])
         with self.assertRaisesRegex(TypeError, "pos_arg_config"):
             self.invoke(dynamic_command, [], pos_arg_config=True)
 
@@ -974,7 +961,7 @@ class CliContractTests(unittest.TestCase):
         self.assertNotIn("0x", output.getvalue())
 
     def test_dynamic_errors_preserve_paths_and_argparse_status(self):
-        with self.assertRaisesRegex(TypeError, "^target: No module named 'missing'"):
+        with self.assertRaisesRegex(TypeError, "^target: .*does not resolve to a callable"):
             self.invoke(dynamic_command, ["--target", "missing.module.target"])
 
         for argv in (
@@ -1057,6 +1044,37 @@ class CliContractTests(unittest.TestCase):
             cli(remainder_target_command)
         with self.assertRaisesRegex(TypeError, "kwargs.child.*cannot contain"):
             cli(nested_target_command)
+
+    def test_selected_cli_schema_rejects_reflectable_unsupported_annotations(self):
+        calls = []
+
+        def unannotated_target(value):
+            calls.append(value)
+
+        def set_target(values: set[int]):
+            calls.append(values)
+
+        cases = [
+            (unannotated_target, None, r"kwargs\.value.*unsupported CLI annotation.*None"),
+            (set_target, set[int], r"kwargs\.values.*unsupported CLI annotation.*set"),
+        ]
+        for target, annotation, message in cases:
+            with self.subTest(target=target.__name__):
+                parameters = msup.base.selected_target_fields(target)
+                self.assertEqual(parameters[0].annotation, annotation)
+
+                @dataclass
+                class SelectedArgs:
+                    selected: Callable[..., Any] = target
+                    kwargs: Annotated[Kwargs, CliArg(kwargs_for="selected")] = field(default_factory=dict)
+
+                def selected_command(args: SelectedArgs):
+                    received.append(args)
+
+                sys.argv = ["program"]
+                with self.assertRaisesRegex(TypeError, message):
+                    cli(selected_command)
+        self.assertEqual(calls, [])
 
     def test_any_is_parsed_as_a_string(self):
         self.assertEqual(self.invoke(any_command, ["--value", "41"]), AnyArgs(value="41"))

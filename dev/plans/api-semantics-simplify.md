@@ -6,7 +6,7 @@
 - Phase 2: Complete
 - Phase 3: Complete
 - Phase 4: Complete
-- Phase 5: Pending
+- Phase 5: Complete
 - Phase 6: Pending
 
 Update each phase to `In progress`, `Complete`, or `Blocked` while executing
@@ -811,7 +811,7 @@ parameterized subtests. `./run.py type_check`, `./run.py lint_check`,
 
 ## Phase 5: Make CLI capability checks explicit and reuse conversion
 
-**Status:** Pending
+**Status:** Complete
 
 1. Rename every remaining underscore-prefixed declaration in `msup/cli.py` to
    the corresponding provisional public name listed at the top of this plan:
@@ -862,6 +862,11 @@ tests/test_cli.py -k 'dynamic or selected or unsupported'`, then
 `uv run --group dev --extra pydantic pytest tests/test_cli.py`,
 `./run.py type_check`, `./run.py lint_check`, `./run.py format_check`, and
 `git diff --check`.
+
+**Validation result:** The focused CLI command passed with 15 tests passed and
+41 deselected. The complete CLI command passed all 56 tests. `./run.py
+type_check`, `./run.py lint_check`, `./run.py format_check`, and `git diff
+--check` passed. `rg -n '^def _|^class _' msup/cli.py` produced no matches.
 
 ## Phase 6: Migrate public documentation and complete validation
 

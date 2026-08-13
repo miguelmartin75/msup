@@ -23,14 +23,21 @@ from msup.base import (
     selected_target_fields,
     str_to_bool,
     to_kwargs,
+    validate_selected_mapping,
 )
 
 
-def cli(cmd_or_cmds: Callable[..., Any] | dict[Callable[..., Any], str], **argsparse_kwargs): ...
+# fmt: off
+def cli(cmd_or_cmds: Callable[..., Any] | dict[Callable[..., Any], str], **argparse_kwargs) -> None:
+    """Parse command-line input and invoke the selected typed command."""
+    ...
+# fmt: on
 
 
 @dataclass(frozen=True)
 class CliArg(Metadata):
+    """Configure CLI help, names, sources, visibility, and kwargs relations."""
+
     help: str = ""
     short: str | None = ""
     env: str | None = None
@@ -40,17 +47,23 @@ class CliArg(Metadata):
 
 
 def cliarg_from_annotations(annotations: list[Any]) -> CliArg | None:
+    """Return the sole CLI metadata value from an annotation list."""
+
     metadata = metadata_from_annotations(annotations)
     result = metadata if isinstance(metadata, CliArg) else None
     return result
 
 
 def error_exit(msg: str, code: int = 1):
+    """Print a CLI error and terminate with the requested status."""
+
     print(f"[ERROR]: {msg}", file=sys.stderr)
     sys.exit(code)
 
 
 def enum_argument_type(annotation: Any, field_name: str) -> Callable[[str], Any]:
+    """Build an argparse converter for the exact textual values of an enum."""
+
     enum_class = enum_type(annotation)
     assert enum_class is not None
     values_by_text: dict[str, Any] = {}
@@ -71,6 +84,8 @@ def enum_argument_type(annotation: Any, field_name: str) -> Callable[[str], Any]
 
 
 def mapping_argument_type(field_name: str) -> Callable[[str], dict[str, Any]]:
+    """Build an argparse converter for an inline or file-backed JSON mapping."""
+
     def convert(value: str) -> dict[str, Any]:
         try:
             return from_dict_value(value, dict[str, Any], str, field_name)
@@ -81,6 +96,8 @@ def mapping_argument_type(field_name: str) -> Callable[[str], dict[str, Any]]:
 
 
 def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], Any]:
+    """Return an argparse converter or reject an unsupported CLI annotation."""
+
     annotation = effective_type(annotation, field_name)
     origin = get_origin(annotation) or annotation
     if annotation is Any or origin is Callable2:
@@ -114,7 +131,9 @@ def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], An
     return result
 
 
-def _add_argument(parser, args, kwargs, annotation, field_name, help_text, positional):
+def add_argument(parser, args, kwargs, annotation, field_name, help_text, positional):
+    """Register one typed positional or optional argument with argparse."""
+
     field_type = effective_type(annotation, field_name)
     origin = get_origin(field_type) or field_type
     kwargs = dict(kwargs)
@@ -138,7 +157,9 @@ def _add_argument(parser, args, kwargs, annotation, field_name, help_text, posit
     parser.add_argument(*args, **kwargs)
 
 
-def _add_fields(parser, command_fields, prefix="", short_prefix=None, force_no_default=False):
+def add_fields(parser, command_fields, prefix="", short_prefix=None, force_no_default=False):
+    """Register reflected fields and their nested structured CLI options."""
+
     parser._msup_fields[tuple(prefix.split(".")) if prefix else ()] = command_fields
     for field_index, f in enumerate(command_fields):
         name = f"{prefix}.{f.name}" if prefix else f.name
@@ -159,7 +180,7 @@ def _add_fields(parser, command_fields, prefix="", short_prefix=None, force_no_d
             raise TypeError(f"{name}: positional collection arguments must be declared last")
         if cli_arg.pos:
             remainder = collection_origin in (list, tuple) and not cli_arg.opt
-            _add_argument(
+            add_argument(
                 parser,
                 [f"{name}_pos"],
                 {"nargs": argparse.REMAINDER if remainder else "?"},
@@ -177,23 +198,23 @@ def _add_fields(parser, command_fields, prefix="", short_prefix=None, force_no_d
                     raise TypeError(f"{name}: short options must not start with --")
                 short = cli_arg.short.removeprefix("-")
                 option_names.insert(0, f"-{short_prefix or prefix}.{short}" if prefix else f"-{short}")
-            _add_argument(parser, option_names, {"dest": name}, annotation, name, help_text, False)
+            add_argument(parser, option_names, {"dest": name}, annotation, name, help_text, False)
 
         field_type = effective_type(annotation, name)
         if is_structured_model(field_type):
-            _add_args(parser, field_type, prefix=name, short_prefix=cli_arg.short, force_no_default=True)
+            add_args(parser, field_type, prefix=name, short_prefix=cli_arg.short, force_no_default=True)
         elif (
             inspect.isclass(field_type)
             and field_type.__module__ not in ("builtins", "collections.abc")
             and enum_type(field_type) is None
             and contains_relation(field_type)
         ):
-            _add_fields(parser, fields_or_init_kwargs(field_type), name, cli_arg.short, True)
+            add_fields(parser, fields_or_init_kwargs(field_type), name, cli_arg.short, True)
 
 
-def _add_args(
-    parser, cmd_type, prefix="", short_prefix=None, pos_arg_config=False, force_no_default=False, fields=None
-):
+def add_args(parser, cmd_type, prefix="", short_prefix=None, pos_arg_config=False, force_no_default=False, fields=None):
+    """Register configuration and reflected field options for a typed command."""
+
     if not prefix:
         if pos_arg_config:
             parser.add_argument("args", nargs="?", type=argument_type(cmd_type, "args"), default=argparse.SUPPRESS)
@@ -205,10 +226,12 @@ def _add_args(
             default=argparse.SUPPRESS,
             help=f"configuration for {cmd_type.__name__}",
         )
-    _add_fields(parser, fields or fields_or_init_kwargs(cmd_type), prefix, short_prefix, force_no_default)
+    add_fields(parser, fields or fields_or_init_kwargs(cmd_type), prefix, short_prefix, force_no_default)
 
 
 def add_direct_args(parser, command_args: list[FieldSpec], pos_arg_config: bool = False):
+    """Register configuration and field options for a direct callable command."""
+
     if pos_arg_config:
         parser.add_argument("args", nargs="?", type=argument_type(dict[str, Any], "args"), default=argparse.SUPPRESS)
     parser.add_argument(
@@ -218,10 +241,12 @@ def add_direct_args(parser, command_args: list[FieldSpec], pos_arg_config: bool 
         default=argparse.SUPPRESS,
         help="configuration for command",
     )
-    _add_fields(parser, command_args)
+    add_fields(parser, command_args)
 
 
-def _config_values(args) -> dict:
+def config_values(args) -> dict:
+    """Decode the parsed top-level CLI configuration mapping."""
+
     raw = getattr(args, "args", None)
     if raw is None:
         result = {}
@@ -232,7 +257,9 @@ def _config_values(args) -> dict:
     return result
 
 
-def _parse_args(parser):
+def parse_args(parser):
+    """Parse argv while preserving a configured positional remainder."""
+
     raw_args = sys.argv[1:]
     args, unknown = parser.parse_known_args(raw_args)
     remainder_dest = getattr(args, "_remainder_dest", None)
@@ -263,41 +290,43 @@ def has_nested_source(clazz: type, args, config: dict, prefix: str) -> bool:
     return False
 
 
-def _merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+def merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    """Recursively overlay mappings while replacing non-mapping values."""
+
     result = dict(base)
     for key, value in overlay.items():
         result[key] = (
-            _merge(cast(Mapping[str, Any], result[key]), value)
+            merge(cast(Mapping[str, Any], result[key]), value)
             if isinstance(result.get(key), Mapping) and isinstance(value, Mapping)
             else value
         )
     return result
 
 
-def _target_options(parser, targets, path, args=None):
+def target_options(parser, targets, path, args=None):
+    """Register or collect dotted options for one cached selected schema."""
+
     result = {}
     for field in targets[path]:
         field_path = (*path, field.name)
         name = ".".join(field_path)
-        if field.annotation is None:
-            raise TypeError(f"{'.'.join(path)}: {field.name}: selected target parameters must have an annotation")
         field_type = effective_type(field.annotation, name)
         if args is None:
             cli_arg = cliarg_from_annotations(field.annotations) or CliArg()
             if cli_arg.short or cli_arg.pos:
                 raise TypeError(f"{name}: selected target parameters cannot define short or positional options")
-            _add_argument(parser, [f"--{name}"], {"dest": name}, field.annotation, name, cli_arg.help, False)
+            add_argument(parser, [f"--{name}"], {"dest": name}, field.annotation, name, cli_arg.help, False)
             if is_structured_model(field_type):
                 if contains_relation(field_type):
                     raise TypeError(f"{name}: selected target parameters cannot contain kwargs_for relations")
                 targets[field_path] = fields_or_init_kwargs(field_type)
-                _target_options(parser, targets, field_path)
+                target_options(parser, targets, field_path)
         else:
             cli_arg = cliarg_from_annotations(field.annotations)
             env_value = os.getenv(cli_arg.env) if cli_arg and cli_arg.env else None
             value = getattr(args, name, env_value if env_value is not None else MISSING)
             if is_structured_model(field_type):
-                nested = _target_options(parser, targets, field_path, args)
+                nested = target_options(parser, targets, field_path, args)
                 if nested:
                     result[field.name] = nested
             elif value is not MISSING:
@@ -305,7 +334,9 @@ def _target_options(parser, targets, path, args=None):
     return result
 
 
-def _bootstrap(args, config, path, fields_by_path, active_paths, cache, targets, help_requested):
+def bootstrap(args, config, path, fields_by_path, active_paths, cache, targets, help_requested):
+    """Resolve selectors once and cache schemas and defaults for dynamic options."""
+
     fields = fields_by_path[path]
     positional = next(
         (field.name for field in fields if (cliarg_from_annotations(field.annotations) or CliArg()).pos), None
@@ -356,14 +387,16 @@ def _bootstrap(args, config, path, fields_by_path, active_paths, cache, targets,
                 default = deepcopy(field.default) if field.default is not MISSING else field.default_factory()
                 cache[field_path] = default
                 projected = to_kwargs(field_type, default)
-                nested = _merge(projected, nested)
+                nested = merge(projected, nested)
                 for child in child_fields:
                     if child.name in projected:
                         cache[(*field_path, child.name)] = deepcopy(projected[child.name])
-            _bootstrap(args, nested, field_path, fields_by_path, active_paths, cache, targets, help_requested)
+            bootstrap(args, nested, field_path, fields_by_path, active_paths, cache, targets, help_requested)
 
 
-def _from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None, fields_by_path=None):
+def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None, fields_by_path=None):
+    """Merge permissive CLI sources and construct one typed command value."""
+
     config = {} if config is None else config
     cache = {} if cache is None else cache
     targets = {} if targets is None else targets
@@ -390,8 +423,8 @@ def _from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None
             values = {}
             for source in (config_value, env_value, cli_value):
                 if source is not MISSING and source is not None:
-                    values = _merge(values, from_dict_value(source, dict[str, Any], type(source), name))
-            values = _merge(values, _target_options(None, targets, field_path, args))
+                    values = merge(values, from_dict_value(source, dict[str, Any], type(source), name))
+            values = merge(values, target_options(None, targets, field_path, args))
             if any(parameter.name not in values for parameter in targets[field_path]):
                 if field_path not in cache:
                     cache[field_path] = (
@@ -402,19 +435,14 @@ def _from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None
                         else {}
                     )
                 values = {**cache[field_path], **values}
-            parameter_names = {parameter.name for parameter in targets[field_path]}
-            unknown = next((key for key in values if key not in parameter_names), None)
-            if unknown is not None:
-                raise TypeError(f"{name}.{unknown}: unknown target parameter")
+            validate_selected_mapping(targets[field_path], values, name)
             converted = {}
             for parameter in targets[field_path]:
                 if parameter.name in values:
                     value = values[parameter.name]
                     converted[parameter.name] = from_dict_value(
-                        value, parameter.annotation or type(value), type(value), f"{name}.{parameter.name}"
+                        value, parameter.annotation, type(value), f"{name}.{parameter.name}"
                     )
-                elif parameter.default is MISSING:
-                    raise TypeError(f"{name}.{parameter.name}: missing required target parameter")
             construct_args[f.name] = converted
         elif is_structured_model(field_type):
             value = config_value
@@ -434,7 +462,7 @@ def _from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None
                     child.name: getattr(converted, child.name) for child in fields_or_init_kwargs(type(converted))
                 }
             if field_path in cache and cache[field_path] is not None:
-                nested_config = _merge(to_kwargs(field_type, cache[field_path]), nested_config)
+                nested_config = merge(to_kwargs(field_type, cache[field_path]), nested_config)
             if (
                 value is MISSING
                 and not has_nested_source(field_type, args, nested_config, name)
@@ -444,7 +472,7 @@ def _from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None
                 continue
             if value is MISSING and is_dataclass(clazz) and not has_default_value(f):
                 error_exit(f"--{name} not provided (default value DNE)", 3)
-            construct_args[f.name] = _from_cli_args(
+            construct_args[f.name] = from_cli_args(
                 field_type, args, nested_config, name, cache, targets, fields_by_path
             )
         else:
@@ -475,6 +503,8 @@ def _from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None
 
 
 def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | None = None) -> dict:
+    """Merge permissive CLI sources for a direct callable command."""
+
     config = {} if config is None else config
     result = {}
     for command_arg in command_args:
@@ -497,12 +527,13 @@ def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | Non
     return result
 
 
-def cli(
-    cmd_or_cmds: Callable[..., Any] | dict[Callable[..., Any], str], pos_arg_config: bool = False, **argsparse_kwargs
-):
-    argsparse_kwargs.setdefault("argument_default", argparse.SUPPRESS)
-    argsparse_kwargs["add_help"] = False
-    parser = argparse.ArgumentParser(**argsparse_kwargs)
+def cli(cmd_or_cmds: Callable[..., Any] | dict[Callable[..., Any], str], **argparse_kwargs) -> None:
+    """Parse command-line input and invoke the selected typed command."""
+
+    pos_arg_config = argparse_kwargs.pop("pos_arg_config", False)
+    argparse_kwargs.setdefault("argument_default", argparse.SUPPRESS)
+    argparse_kwargs["add_help"] = False
+    parser = argparse.ArgumentParser(**argparse_kwargs)
     parsers = [parser]
     commands: list[tuple[Callable[..., Any], str | None]]
     if isinstance(cmd_or_cmds, dict):
@@ -525,7 +556,7 @@ def cli(
                 help=desc,
                 argument_default=argparse.SUPPRESS,
                 add_help=False,
-                conflict_handler=argsparse_kwargs.get("conflict_handler", "error"),
+                conflict_handler=argparse_kwargs.get("conflict_handler", "error"),
             )
             parsers.append(command_parser)
         else:
@@ -564,7 +595,7 @@ def cli(
             **{metadata_dest: (metadata_marker, cmd_fn, command_type, command_fields, command_parser)}
         )
         if command_type is not None:
-            _add_args(command_parser, command_type, pos_arg_config=pos_arg_config, fields=metadata_fields)
+            add_args(command_parser, command_type, pos_arg_config=pos_arg_config, fields=metadata_fields)
         elif command_fields:
             add_direct_args(command_parser, command_fields, pos_arg_config=pos_arg_config)
 
@@ -579,7 +610,7 @@ def cli(
     targets = {}
     if command is not None:
         _, cmd_fn, command_type, command_fields, command_parser = command
-        config = _config_values(args)
+        config = config_values(args)
         fields_by_path = getattr(command_parser, "_msup_fields")
         relation_paths = {
             path
@@ -592,7 +623,7 @@ def cli(
             active_paths = relation_paths | {
                 relation_path[:index] for relation_path in relation_paths for index in range(1, len(relation_path) + 1)
             }
-            _bootstrap(
+            bootstrap(
                 args,
                 config,
                 (),
@@ -603,17 +634,17 @@ def cli(
                 "--help" in raw_args or "-h" in raw_args,
             )
             for path in list(targets):
-                _target_options(command_parser, targets, path)
+                target_options(command_parser, targets, path)
     for command_parser in parsers:
         command_parser.add_argument("-h", "--help", action="help", help="show this help message and exit")
-    args = _parse_args(parser)
+    args = parse_args(parser)
     if command is not None:
         if command_type is not None:
             cmd_fn(
-                _from_cli_args(command_type, args, config, cache=cache, targets=targets, fields_by_path=fields_by_path)
+                from_cli_args(command_type, args, config, cache=cache, targets=targets, fields_by_path=fields_by_path)
             )
         elif targets:
-            cmd_fn(**_from_cli_args(cmd_fn, args, config, cache=cache, targets=targets, fields_by_path=fields_by_path))
+            cmd_fn(**from_cli_args(cmd_fn, args, config, cache=cache, targets=targets, fields_by_path=fields_by_path))
         else:
             cmd_fn(**from_direct_cli_args(command_fields, args, config))
     else:
