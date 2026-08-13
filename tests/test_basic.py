@@ -125,6 +125,9 @@ def increment(value: int) -> int:
     return value + 1
 
 
+increment_alias = increment
+
+
 def function_field_values(
     required: Annotated[int, "required value", CliArg(help="required")],
     callback: Callable[[int], int] = increment,
@@ -920,6 +923,131 @@ class BasicTests(unittest.TestCase):
         self.assertEqual(to_dict_value([1], list[int]), [1])
         with self.assertRaisesRegex(TypeError, "non-optional union"):
             effective_type(int | str, "value")
+
+    def test_strict_encoded_values_use_exact_source_shapes(self):
+        nested = Nested(1, 2)
+        any_value = object()
+        callable_reference = f"{__name__}.increment"
+        success_cases = [
+            (3, int, 3),
+            (1.5, float, 1.5),
+            ("value", str, "value"),
+            (True, bool, True),
+            ("ready", State, State.READY),
+            (State.READY, State, State.READY),
+            (callable_reference, Callable[[int], int], increment),
+            (increment, Callable[[int], int], increment),
+            ({"a": 1, "b": 2}, Nested, nested),
+            (nested, Nested, nested),
+            ({"value": 1}, dict[str, int], {"value": 1}),
+            ([1, 2], list[int], [1, 2]),
+            ([1, "two"], tuple[int, str], (1, "two")),
+            ((1, "two"), tuple[int, str], (1, "two")),
+            (None, int | None, None),
+            (1, int | str, 1),
+            (any_value, Any, any_value),
+            (None, type(None), None),
+        ]
+        for source, annotation, expected in success_cases:
+            with self.subTest(source=source, annotation=annotation):
+                result = from_dict_value(source, annotation, type(source), "value", strict=True)
+                if annotation is Any:
+                    self.assertIs(result, source)
+                else:
+                    self.assertEqual(result, expected)
+
+        failure_cases = [
+            (True, int),
+            (1, float),
+            (3, str),
+            (1, bool),
+            (1, State),
+            (3, Callable[[int], int]),
+            ('{"a": 1, "b": 2}', Nested),
+            ([], dict[str, int]),
+            ((1,), list[int]),
+            ({1}, tuple[int, ...]),
+            ("1", int | None),
+            (1.5, int | str),
+            (0, type(None)),
+            ({1, 2}, set[int]),
+        ]
+        for source, annotation in failure_cases:
+            with self.subTest(source=source, annotation=annotation):
+                with self.assertRaises(TypeError):
+                    from_dict_value(source, annotation, type(source), "value", strict=True)
+
+        with self.assertRaisesRegex(TypeError, "not supported for json"):
+            from_dict_value({}, Any, dict, "value", strict=True, operation="json")
+        with self.assertRaisesRegex(TypeError, "not supported for json"):
+            from_dict_value({1: 2}, dict[int, int], dict, "value", strict=True, operation="json")
+
+    def test_permissive_list_decoding_accepts_tuple_carriers(self):
+        self.assertEqual(from_dict_value(("1", 2), list[int], tuple, "values"), [1, 2])
+        with self.assertRaisesRegex(TypeError, r"values: list\[int\].*tuple"):
+            from_dict_value((1, 2), list[int], tuple, "values", strict=True)
+
+    def test_strict_callable_strings_require_canonical_references(self):
+        canonical = f"{__name__}.increment"
+        alias = f"{__name__}.increment_alias"
+
+        self.assertIs(from_dict_value(canonical, Callable[..., Any], str, "callback", strict=True), increment)
+        self.assertIs(from_dict_value(alias, Callable[..., Any], str, "callback"), increment)
+        with self.assertRaisesRegex(TypeError, "callback:.*not the canonical reference"):
+            from_dict_value(alias, Callable[..., Any], str, "callback", strict=True)
+        for malformed in ("not a valid:reference:name", f"{__name__}.missing"):
+            with self.subTest(malformed=malformed):
+                with self.assertRaisesRegex(TypeError, "callback:.*does not resolve to a callable"):
+                    from_dict_value(malformed, Callable[..., Any], str, "callback", strict=True)
+
+    def test_strict_entry_points_reject_coercion_and_unsupported_identity(self):
+        @dataclass
+        class ScalarOwner:
+            count: int
+
+        @dataclass
+        class SetOwner:
+            values: set[int]
+
+        self.assertEqual(from_dict(ScalarOwner, {"count": "3"}), ScalarOwner(3))
+        self.assertEqual(to_dict(ScalarOwner(cast(Any, "3"))), {"count": 3})
+        with self.assertRaisesRegex(TypeError, "ScalarOwner.count"):
+            from_dict(ScalarOwner, {"count": "3"}, strict=True)
+        with self.assertRaisesRegex(TypeError, "ScalarOwner.count"):
+            to_dict(ScalarOwner(cast(Any, "3")), strict=True)
+
+        valid_set = {1, 2}
+        self.assertIs(from_dict_value(valid_set, set[int], set, "values"), valid_set)
+        self.assertIs(to_dict_value(valid_set, set[int]), valid_set)
+        for invalid in ({"1", "2"},):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(TypeError):
+                    from_dict_value(invalid, set[int], set, "values")
+                with self.assertRaises(TypeError):
+                    to_dict_value(invalid, set[int])
+        with self.assertRaisesRegex(TypeError, "SetOwner.values.*not supported for dict"):
+            to_dict(SetOwner(valid_set), strict=True)
+        with self.assertRaisesRegex(TypeError, "SetOwner.values.*not supported for dict"):
+            from_dict(SetOwner, {"values": valid_set}, strict=True)
+        with self.assertRaisesRegex(TypeError, "SetOwner.values.*not supported for json"):
+            to_json(SetOwner(valid_set), strict=True)
+        with self.assertRaisesRegex(TypeError, "SetOwner.values.*not supported for json"):
+            from_json(SetOwner, s='{"values": [1, 2]}', strict=True)
+
+    def test_strict_shallow_and_selected_conversion_validate_without_invocation(self):
+        global relation_target_calls
+        relation_target_calls = 0
+
+        nested_values = [1, 2]
+        projected = to_kwargs(function_serialization_values, {"values": nested_values}, strict=True)
+        self.assertIs(projected["values"], nested_values)
+        with self.assertRaisesRegex(TypeError, "function_serialization_values.values"):
+            to_kwargs(function_serialization_values, {"values": ["1"]}, strict=True)
+        with self.assertRaisesRegex(TypeError, "function_field_values.unannotated.*not supported"):
+            to_kwargs(function_field_values, {"unannotated": 1}, strict=True)
+        with self.assertRaisesRegex(TypeError, "kwargs.value"):
+            kwargs_from_dict(counted_relation_target, {"value": "3"}, strict=True)
+        self.assertEqual(relation_target_calls, 0)
 
     def test_regular_classes_keep_main_serialization_support(self):
         value = from_dict(BasicClass, {"name": "ok", "count": None})

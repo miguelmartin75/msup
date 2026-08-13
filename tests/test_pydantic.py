@@ -6,9 +6,9 @@ from enum import Enum
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, ClassVar
 
-from pydantic import AliasChoices, AliasPath, BaseModel, Field, ValidationError
+from pydantic import AliasChoices, AliasPath, BaseModel, Field, ValidationError, model_validator
 from pydantic.v1 import BaseModel as PydanticV1BaseModel
 
 from msup.base import (
@@ -16,6 +16,7 @@ from msup.base import (
     fields_or_init_kwargs,
     from_dict,
     from_json,
+    from_kwargs,
     is_pydantic_model,
     to_dict,
     to_json,
@@ -89,6 +90,28 @@ def selected_pydantic_target(child: Child, label: str = "default") -> None:
 class SelectedPydanticTargetOwner(BaseModel):
     target: Callable[..., Any] = selected_pydantic_target
     kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")] = Field(default_factory=dict)
+
+
+class CountingPydanticTargetOwner(BaseModel):
+    target: Callable[..., Any] = selected_pydantic_target
+    kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")] = Field(default_factory=dict)
+    unrelated: int = Field(alias="externalValue")
+    validation_calls: ClassVar[int] = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def count_validation(cls, value):
+        cls.validation_calls += 1
+        return value
+
+
+class ShallowPydanticValues(BaseModel):
+    value: int
+    construction_values: ClassVar[list[dict[str, Any]]] = []
+
+    def __init__(self, **values):
+        type(self).construction_values.append(values.copy())
+        super().__init__(**values)
 
 
 pydantic_received = []
@@ -277,6 +300,46 @@ class PydanticSerializationTests(unittest.TestCase):
         )
         self.assertEqual(from_json(SelectedPydanticTargetOwner, s=to_json(value, indent=None)), value)
         self.assertEqual(selected_pydantic_target_calls, 0)
+
+    def test_strict_recursive_conversion_keeps_native_pydantic_validation(self):
+        with self.assertRaises(ValidationError):
+            from_dict(NativePydanticValues, {"externalValue": "3"}, strict=True)
+        self.assertEqual(
+            from_dict(NativePydanticValues, {"externalValue": 3}, strict=True),
+            NativePydanticValues(externalValue=3),
+        )
+        with self.assertRaises(ValidationError):
+            from_json(NativePydanticValues, s='{"externalValue": "3"}', strict=True)
+
+    def test_strict_relation_preprocessing_calls_native_validation_once(self):
+        global selected_pydantic_target_calls
+        selected_pydantic_target_calls = 0
+        CountingPydanticTargetOwner.validation_calls = 0
+
+        value = from_dict(
+            CountingPydanticTargetOwner,
+            {
+                "target": f"{__name__}.selected_pydantic_target",
+                "kwargs": {"child": {"name": "nested", "count": 3}},
+                "externalValue": 4,
+            },
+            strict=True,
+        )
+
+        self.assertEqual(value.kwargs, {"child": Child(name="nested", count=3)})
+        self.assertEqual(value.unrelated, 4)
+        self.assertEqual(CountingPydanticTargetOwner.validation_calls, 1)
+        self.assertEqual(selected_pydantic_target_calls, 0)
+
+    def test_strict_shallow_pydantic_construction_does_not_forward_strict(self):
+        ShallowPydanticValues.construction_values.clear()
+        value = from_kwargs(ShallowPydanticValues, {"value": 3, "unknown": 4}, strict=True)
+
+        self.assertEqual(value, ShallowPydanticValues(value=3))
+        self.assertEqual(ShallowPydanticValues.construction_values[0], {"value": 3})
+        self.assertNotIn("strict", ShallowPydanticValues.construction_values[0])
+        with self.assertRaisesRegex(TypeError, "ShallowPydanticValues.value"):
+            from_kwargs(ShallowPydanticValues, {"value": "3"}, strict=True)
 
 
 class PydanticCliTests(unittest.TestCase):

@@ -239,27 +239,35 @@ def is_structured_model(candidate: type | object) -> bool:
     return is_dataclass(candidate) or is_pydantic_model(candidate)
 
 
-def from_json(clazz: type[T], s: str | None = None, file_like=None, path: str | None = None) -> T:
+def from_json(
+    clazz: type[T],
+    s: str | None = None,
+    file_like=None,
+    path: str | None = None,
+    *,
+    strict: bool = False,
+) -> T:
     """Read JSON input, recursively decode it, and construct a class instance."""
 
     if path:
         assert os.path.exists(path), f"{path} does not exist"
         with open(path) as in_f:
-            result = from_dict(clazz, json.load(in_f))
+            result = from_dict_operation(clazz, json.load(in_f), strict=strict, operation="json")
     elif file_like:
-        result = from_dict(clazz, json.load(file_like))
+        result = from_dict_operation(clazz, json.load(file_like), strict=strict, operation="json")
     else:
         assert s is not None, "s must be provided when file_like and path are absent"
-        result = from_dict(clazz, json.loads(s))
+        result = from_dict_operation(clazz, json.loads(s), strict=strict, operation="json")
     return result
 
 
 def to_json(
-    x: T,
+    x: Any,
     file_like=None,
     indent: int | None = 2,
     *,
     type_class: type | Callable[..., Any] | None = None,
+    strict: bool = False,
 ) -> str | None:
     """Encode a value as JSON text or write it to a JSON destination."""
 
@@ -270,12 +278,12 @@ def to_json(
             if parent:
                 os.makedirs(parent, exist_ok=True)
             with open(file_like, "w") as out_f:
-                json.dump(to_dict(x, type_class), out_f, indent=indent)
+                json.dump(to_dict_operation(x, type_class, strict=strict, operation="json"), out_f, indent=indent)
         else:
-            json.dump(to_dict(x, type_class), file_like, indent=indent)
+            json.dump(to_dict_operation(x, type_class, strict=strict, operation="json"), file_like, indent=indent)
         result = None
     else:
-        result = json.dumps(to_dict(x, type_class), indent=indent)
+        result = json.dumps(to_dict_operation(x, type_class, strict=strict, operation="json"), indent=indent)
     return result
 
 
@@ -731,43 +739,74 @@ def validate_selected_mapping(
         raise TypeError(f"{field_name}.{missing}: missing required target parameter")
 
 
-def dict_from_str(x: str) -> dict[Any, Any]:
+def dict_from_str(value: str) -> dict[Any, Any]:
     """Load a dictionary from inline JSON text or a JSON file path."""
 
-    assert isinstance(x, str)
-    if x.startswith("{"):
-        result = json.loads(x)
-    elif x.endswith(".json"):
-        assert os.path.exists(x), f"{x} does not exist"
-        with open(x) as in_f:
+    assert isinstance(value, str)
+    if value.startswith("{"):
+        result = json.loads(value)
+    elif value.endswith(".json"):
+        assert os.path.exists(value), f"{value} does not exist"
+        with open(value) as in_f:
             result = json.load(in_f)
     else:
-        raise AssertionError(f"unexpected str: {x}")
+        raise AssertionError(f"unexpected str: {value}")
     return result
 
 
-def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: str) -> Any:
+def from_dict_value(
+    x: Any,
+    field_type: Any,
+    concrete_type: type,
+    field_name: str,
+    *,
+    strict: bool = False,
+    operation: Literal["dict", "json"] = "dict",
+) -> Any:
     """Recursively decode one dictionary-form value according to its annotation."""
 
+    field_type = normalize_annotation(field_type)
     origin = annotation_origin(field_type)
+    if strict and not is_annotation_supported(field_type, operation=operation):
+        raise TypeError(f"{field_name}: {field_type} is not supported for {operation} conversion")
     if x is None:
-        if is_optional(field_type) or field_type is Any:
+        if is_optional(field_type) or field_type in (Any, type(None)):
             result = None
         else:
             raise TypeError(f"{field_name}: {field_type} cannot be converted from None")
     else:
         optional_type = get_optional_type(field_type)
         if optional_type is not None:
-            result = from_dict_value(x, optional_type, concrete_type, field_name)
+            result = from_dict_value(x, optional_type, concrete_type, field_name, strict=strict, operation=operation)
         elif origin in (Union, UnionType):
-            member = union_member(field_type, concrete_type, field_name)
-            result = from_dict_value(x, member, concrete_type, field_name)
+            if strict:
+                matches = []
+                for member in get_args(field_type):
+                    try:
+                        converted = from_dict_value(
+                            x, member, concrete_type, field_name, strict=True, operation=operation
+                        )
+                    except (AssertionError, AttributeError, ImportError, TypeError, ValueError):
+                        continue
+                    matches.append(converted)
+                if len(matches) != 1:
+                    detail = "no exact conversion" if not matches else "ambiguous exact conversion"
+                    raise TypeError(f"{field_name}: {detail} from {concrete_type} to {field_type}")
+                result = matches[0]
+            else:
+                member = union_member(field_type, concrete_type, field_name)
+                result = from_dict_value(x, member, concrete_type, field_name, operation=operation)
         else:
             enum_class = enum_type(field_type)
             if enum_class is not None:
                 validate_enum_values(enum_class, field_name)
                 if isinstance(x, enum_class):
                     result = x
+                elif strict and not any(type(x) is type(member.value) and x == member.value for member in enum_class):
+                    values = [member.value for member in enum_class]
+                    raise TypeError(
+                        f"{field_name}: invalid exact {enum_class.__name__} value {x!r}; expected one of {values}"
+                    )
                 else:
                     try:
                         result = enum_class(x)
@@ -778,55 +817,90 @@ def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: st
                         ) from error
             elif origin is Callable2:
                 if isinstance(x, str):
-                    result = load_callable(x)
+                    try:
+                        result = load_callable(x)
+                    except (AttributeError, ImportError, ValueError) as error:
+                        raise TypeError(f"{field_name}: {x!r} does not resolve to a callable") from error
                     if not callable(result):
                         raise TypeError(f"{field_name}: {x} does not resolve to a callable")
+                    if strict:
+                        try:
+                            canonical_name = dump_callable(result)
+                        except TypeError as error:
+                            raise TypeError(f"{field_name}: {x!r} is not a canonical callable reference") from error
+                        if canonical_name != x:
+                            raise TypeError(f"{field_name}: {x!r} is not the canonical reference {canonical_name!r}")
                 elif callable(x):
                     result = x
                 else:
                     raise TypeError(f"{field_name}: expected a callable or importable callable reference")
-            else:
-                concrete_origin = annotation_origin(concrete_type)
-                if field_type is Any:
-                    compatible = True
-                elif is_structured_model(field_type):
-                    compatible = concrete_origin in (field_type, dict, str)
-                elif origin is dict:
-                    compatible = concrete_origin in (dict, str)
-                elif origin in (list, tuple):
-                    compatible = concrete_origin in (list, tuple)
-                elif origin in (int, float, bool, str) and concrete_origin in (int, float, bool, str):
-                    compatible = True
-                else:
-                    compatible = origin is concrete_origin
-                if not compatible:
-                    raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
             if enum_class is not None or origin is Callable2:
                 pass
             elif field_type is Any:
                 result = x
             elif is_structured_model(field_type):
-                if concrete_type is field_type:
+                if isinstance(x, field_type):
                     result = x
+                elif strict and not isinstance(x, Mapping):
+                    raise TypeError(f"{field_name}: expected a mapping or {field_type}, got {type(x)}")
                 elif isinstance(x, str):
-                    result = from_dict(field_type, dict_from_str(x), field_name=field_name)
+                    result = from_dict_operation(
+                        field_type,
+                        dict_from_str(x),
+                        field_name=field_name,
+                        operation=operation,
+                    )
+                elif isinstance(x, Mapping):
+                    result = from_dict_operation(
+                        field_type,
+                        x,
+                        strict=strict,
+                        field_name=field_name,
+                        operation=operation,
+                    )
                 else:
-                    result = from_dict(field_type, x, field_name=field_name)
+                    raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
             else:
-                if origin is bool and isinstance(x, str):
+                if origin in (int, float, str, bool) and strict:
+                    if type(x) is not origin:
+                        raise TypeError(f"{field_name}: expected exact {origin.__name__}, got {type(x).__name__}")
+                    result = x
+                elif origin is bool and isinstance(x, str):
                     result = str_to_bool(x)
                 elif origin in (int, float, str, bool):
                     result = field_type(x)
                 elif origin is dict:
+                    if strict and not isinstance(x, Mapping):
+                        raise TypeError(f"{field_name}: {field_type} cannot be converted from {type(x)}")
                     raw = dict_from_str(x) if isinstance(x, str) else x
+                    if not isinstance(raw, Mapping):
+                        raise TypeError(f"{field_name}: expected a mapping, got {type(raw)}")
                     key_type, value_type = get_collection_args(field_type)
                     result = {
-                        from_dict_value(key, key_type, type(key), f"{field_name}.key"): from_dict_value(
-                            value, value_type, type(value), f"{field_name}.value"
+                        from_dict_value(
+                            key,
+                            key_type,
+                            type(key),
+                            f"{field_name}.key",
+                            strict=strict,
+                            operation=operation,
+                        ): from_dict_value(
+                            value,
+                            value_type,
+                            type(value),
+                            f"{field_name}.value",
+                            strict=strict,
+                            operation=operation,
                         )
                         for key, value in raw.items()
                     }
                 elif origin in (list, tuple):
+                    if origin is list and (
+                        (strict and not isinstance(x, list)) or (not strict and not isinstance(x, (list, tuple)))
+                    ):
+                        raise TypeError(f"{field_name}: {field_type} cannot be converted from {type(x)}")
+                    if origin is tuple and not isinstance(x, (list, tuple)):
+                        raise TypeError(f"{field_name}: {field_type} cannot be converted from {type(x)}")
                     item_types = get_collection_args(field_type, len(x))
                     if (
                         origin is tuple
@@ -841,28 +915,53 @@ def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: st
                             item_types[index] if index < len(item_types) else Any,
                             type(item),
                             f"{field_name}[{index}]",
+                            strict=strict,
+                            operation=operation,
                         )
                         for index, item in enumerate(x)
                     )
-                elif origin is Callable2:
-                    pass
+                elif not strict and is_value_of_type(x, field_type):
+                    result = x
                 else:
-                    raise TypeError(f"unexpected type: {field_type} (origin={origin})")
+                    raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
     return result
 
 
-def to_dict_value(x: Any, field_type: Any, field_name: str = "value") -> Any:
+def to_dict_value(
+    x: Any,
+    field_type: Any,
+    field_name: str = "value",
+    *,
+    strict: bool = False,
+    operation: Literal["dict", "json"] = "dict",
+) -> Any:
     """Recursively encode one Python value and qualify failures with its field path."""
 
     try:
+        field_type = normalize_annotation(field_type)
         origin = annotation_origin(field_type)
+        if strict:
+            if not is_annotation_supported(field_type, operation=operation):
+                raise TypeError(f"{field_type} is not supported for {operation} conversion")
+            if not is_value_of_type(x, field_type):
+                raise TypeError(f"expected {field_type}, got {type(x)}")
         optional_type = get_optional_type(field_type)
         if x is None:
-            result = None
+            if field_type in (Any, type(None)) or optional_type is not None:
+                result = None
+            else:
+                raise TypeError(f"expected {field_type}, got None")
         elif optional_type is not None:
-            result = to_dict_value(x, optional_type, field_name)
+            result = to_dict_value(x, optional_type, field_name, strict=strict, operation=operation)
         elif origin in (Union, UnionType):
-            result = to_dict_value(x, union_member(field_type, type(x), field_name), field_name)
+            if strict:
+                matches = [member for member in get_args(field_type) if is_value_of_type(x, member)]
+                if len(matches) != 1:
+                    raise TypeError(f"ambiguous exact value for {field_type}")
+                member = matches[0]
+            else:
+                member = union_member(field_type, type(x), field_name)
+            result = to_dict_value(x, member, field_name, strict=strict, operation=operation)
         elif field_type is Any:
             result = x
         elif (enum_class := enum_type(field_type)) is not None:
@@ -870,13 +969,13 @@ def to_dict_value(x: Any, field_type: Any, field_name: str = "value") -> Any:
             if not isinstance(x, enum_class):
                 raise TypeError(f"{field_name}: expected {enum_class.__name__} value, got {type(x)}")
             result = x.value
-        elif is_structured_model(x):
-            result = to_dict(x, field_name=field_name)
+        elif is_structured_model(field_type):
+            result = to_dict_operation(x, strict=strict, field_name=field_name, operation=operation)
         elif origin is dict:
             key_type, value_type = get_collection_args(field_type)
             result = {
-                to_dict_value(key, key_type, f"{field_name}.key"): to_dict_value(
-                    value, value_type, f"{field_name}.value"
+                to_dict_value(key, key_type, f"{field_name}.key", strict=strict, operation=operation): to_dict_value(
+                    value, value_type, f"{field_name}.value", strict=strict, operation=operation
                 )
                 for key, value in x.items()
             }
@@ -887,6 +986,8 @@ def to_dict_value(x: Any, field_type: Any, field_name: str = "value") -> Any:
                     item,
                     item_types[index] if index < len(item_types) else Any,
                     f"{field_name}[{index}]",
+                    strict=strict,
+                    operation=operation,
                 )
                 for index, item in enumerate(x)
             ]
@@ -897,8 +998,10 @@ def to_dict_value(x: Any, field_type: Any, field_name: str = "value") -> Any:
             result = dump_callable(x)
         elif origin in (int, float, str, bool):
             result = origin(x)
-        else:
+        elif not strict and is_value_of_type(x, field_type):
             result = x
+        else:
+            raise TypeError(f"{field_type} cannot encode value of type {type(x)}")
     except (TypeError, ValueError) as error:
         message = str(error)
         qualified_prefixes = (f"{field_name}:", f"{field_name}.", f"{field_name}[")
@@ -908,10 +1011,15 @@ def to_dict_value(x: Any, field_type: Any, field_name: str = "value") -> Any:
     return result
 
 
-def to_dict(
-    x: Any, type_class: type | Callable[..., Any] | None = None, *, field_name: str | None = None
+def to_dict_operation(
+    x: Any,
+    type_class: type | Callable[..., Any] | None = None,
+    *,
+    strict: bool = False,
+    field_name: str | None = None,
+    operation: Literal["dict", "json"] = "dict",
 ) -> dict[str, Any]:
-    """Recursively encode declared fields into dictionary-form values."""
+    """Encode one owner traversal with explicit dictionary or JSON capability provenance."""
 
     result: dict[str, Any] = {}
     mapping = x if isinstance(x, Mapping) else None
@@ -923,10 +1031,16 @@ def to_dict(
         if value is MISSING:
             continue
         if f.kwargs_relation is None:
-            if f.annotation is not Any and is_structured_model(value):
-                result[f.name] = to_dict(value, field_name=f"{owner_name}.{f.name}")
-            else:
-                result[f.name] = to_dict_value(value, f.annotation or type(value), f"{owner_name}.{f.name}")
+            if strict and f.annotation is None:
+                raise TypeError(f"{owner_name}.{f.name}: annotation is not supported for {operation} conversion")
+            annotation = f.annotation if f.annotation is not None else type(value)
+            result[f.name] = to_dict_value(
+                value,
+                annotation,
+                f"{owner_name}.{f.name}",
+                strict=strict,
+                operation=operation,
+            )
         else:
             target = (
                 mapping.get(f.kwargs_relation.name, MISSING)
@@ -944,14 +1058,32 @@ def to_dict(
             for parameter in parameters:
                 if parameter.name in value:
                     raw = value[parameter.name]
-                    annotation = parameter.annotation or type(raw)
-                    converted[parameter.name] = (
-                        to_dict(raw, field_name=f"{field_name}.{parameter.name}")
-                        if is_structured_model(raw)
-                        else to_dict_value(raw, annotation, f"{field_name}.{parameter.name}")
+                    if strict and parameter.annotation is None:
+                        raise TypeError(
+                            f"{field_name}.{parameter.name}: annotation is not supported for {operation} conversion"
+                        )
+                    annotation = parameter.annotation if parameter.annotation is not None else type(raw)
+                    converted[parameter.name] = to_dict_value(
+                        raw,
+                        annotation,
+                        f"{field_name}.{parameter.name}",
+                        strict=strict,
+                        operation=operation,
                     )
             result[f.name] = converted
     return result
+
+
+def to_dict(
+    x: Any,
+    type_class: type | Callable[..., Any] | None = None,
+    *,
+    strict: bool = False,
+    field_name: str | None = None,
+) -> dict[str, Any]:
+    """Recursively encode declared fields into dictionary-form values."""
+
+    return to_dict_operation(x, type_class, strict=strict, field_name=field_name, operation="dict")
 
 
 def to_kwargs(
@@ -962,21 +1094,45 @@ def to_kwargs(
 ) -> dict[str, Any]:
     """Select a target's present top-level keyword-bindable values without conversion."""
 
-    del strict
     result: dict[str, Any] = {}
-    for parameter in inspect.signature(target).parameters.values():
-        if parameter.kind not in (parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY):
-            continue
+    owner_name = cast(Any, target).__qualname__
+    if inspect.isclass(target):
+        parameters = [(field.name, field.annotation) for field in fields_or_init_kwargs(target)]
+    else:
+        annotations = get_type_hints(target, include_extras=True)
+        parameters = [
+            (parameter.name, annotations.get(parameter.name, parameter.annotation))
+            for parameter in inspect.signature(target).parameters.values()
+            if parameter.kind in (parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY)
+        ]
+    for parameter_name, annotation in parameters:
         if isinstance(x, Mapping):
-            if parameter.name in x:
-                result[parameter.name] = x[parameter.name]
-        elif hasattr(x, parameter.name):
-            result[parameter.name] = getattr(x, parameter.name)
+            if parameter_name in x:
+                value = x[parameter_name]
+                result[parameter_name] = value
+            else:
+                continue
+        elif hasattr(x, parameter_name):
+            value = getattr(x, parameter_name)
+            result[parameter_name] = value
+        else:
+            continue
+        if strict:
+            if annotation in (None, inspect.Parameter.empty) or not is_annotation_supported(
+                annotation, operation="type_check"
+            ):
+                raise TypeError(f"{owner_name}.{parameter_name}: annotation is not supported for type_check")
+            if not is_value_of_type(value, annotation):
+                raise TypeError(f"{owner_name}.{parameter_name}: expected {annotation}, got {type(value)}")
     return result
 
 
 def kwargs_from_dict(
-    target: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str = "kwargs"
+    target: type | Callable[..., Any],
+    values: Mapping[str, Any],
+    *,
+    strict: bool = False,
+    field_name: str = "kwargs",
 ) -> dict[str, Any]:
     """Converts a selected target's explicit kwargs without invoking the target."""
 
@@ -1015,6 +1171,7 @@ def kwargs_from_dict(
                     relation.annotation,
                     type(selected_target),
                     f"{field_name}.{relation.name}",
+                    strict=strict,
                 )
                 try:
                     selected_parameters = selected_target_fields(selected_target)
@@ -1035,20 +1192,29 @@ def kwargs_from_dict(
             for selected_parameter in selected_parameters:
                 if selected_parameter.name in merged:
                     selected_value = merged[selected_parameter.name]
+                    if strict and selected_parameter.annotation is None:
+                        raise TypeError(
+                            f"{current_field_name}.{selected_parameter.name}: "
+                            "annotation is not supported for dict conversion"
+                        )
                     converted[selected_parameter.name] = from_dict_value(
                         selected_value,
                         selected_parameter.annotation if selected_parameter.annotation is not None else Any,
                         type(selected_value),
                         f"{current_field_name}.{selected_parameter.name}",
+                        strict=strict,
                     )
             result[parameter.name] = converted
         elif value is not MISSING:
             value = values[parameter.name]
+            if strict and parameter.annotation is None:
+                raise TypeError(f"{current_field_name}: annotation is not supported for dict conversion")
             result[parameter.name] = from_dict_value(
                 value,
                 parameter.annotation if parameter.annotation is not None else Any,
                 type(value),
                 current_field_name,
+                strict=strict,
             )
     validate_selected_mapping(parameters, {**values, **result}, field_name)
     return result
@@ -1085,8 +1251,15 @@ def from_kwargs(
     return result
 
 
-def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = None) -> T:
-    """Recursively decode dictionary-form values and construct a class instance."""
+def from_dict_operation(
+    clazz: type[T],
+    x: Mapping[Any, Any],
+    *,
+    strict: bool = False,
+    field_name: str | None = None,
+    operation: Literal["dict", "json"] = "dict",
+) -> T:
+    """Decode one owner traversal with explicit dictionary or JSON capability provenance."""
 
     owner_name = field_name or clazz.__qualname__
     if contains_relation(clazz):
@@ -1113,7 +1286,14 @@ def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = Non
                             target = relation.default_factory()
                         else:
                             raise TypeError(f"{owner_name}.{relation.name}: missing selector")
-                    target = from_dict_value(target, relation.annotation, type(target), f"{owner_name}.{relation.name}")
+                    target = from_dict_value(
+                        target,
+                        relation.annotation,
+                        type(target),
+                        f"{owner_name}.{relation.name}",
+                        strict=strict,
+                        operation=operation,
+                    )
                     try:
                         parameters = selected_target_fields(target)
                     except TypeError as error:
@@ -1136,11 +1316,18 @@ def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = Non
                 for parameter in parameters:
                     if parameter.name in merged:
                         parameter_value = merged[parameter.name]
+                        if strict and parameter.annotation is None:
+                            raise TypeError(
+                                f"{current_field_name}.{parameter.name}: "
+                                f"annotation is not supported for {operation} conversion"
+                            )
                         converted[parameter.name] = from_dict_value(
                             parameter_value,
                             parameter.annotation or type(parameter_value),
                             type(parameter_value),
                             f"{current_field_name}.{parameter.name}",
+                            strict=strict,
+                            operation=operation,
                         )
             elif value is not MISSING:
                 field_type = get_optional_type(f.annotation) or normalize_annotation(f.annotation) or type(value)
@@ -1149,29 +1336,65 @@ def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = Non
                         converted = value
                     else:
                         raw = dict_from_str(value) if isinstance(value, str) else value
-                        converted = from_dict(field_type, cast(dict[Any, Any], raw), field_name=current_field_name)
+                        converted = from_dict_operation(
+                            field_type,
+                            cast(dict[Any, Any], raw),
+                            strict=strict,
+                            field_name=current_field_name,
+                            operation=operation,
+                        )
                 elif not pydantic_owner:
-                    converted = from_dict_value(value, f.annotation or field_type, type(value), current_field_name)
+                    if strict and f.annotation is None:
+                        raise TypeError(f"{current_field_name}: annotation is not supported for {operation} conversion")
+                    converted = from_dict_value(
+                        value,
+                        f.annotation or field_type,
+                        type(value),
+                        current_field_name,
+                        strict=strict,
+                        operation=operation,
+                    )
                 else:
                     continue
             else:
                 continue
             values[f.name] = converted
         if pydantic_owner:
-            result = cast(Any, clazz).model_validate(values)
+            result = cast(Any, clazz).model_validate(values, strict=strict)
         else:
             result = clazz(**values)
     elif is_pydantic_model(clazz):
         fields_or_init_kwargs(clazz)
-        result = cast(Any, clazz).model_validate(x)
+        result = cast(Any, clazz).model_validate(x, strict=strict)
     else:
-        result = clazz(
-            **{
-                f.name: from_dict_value(
-                    x[f.name], f.annotation or type(x[f.name]), type(x[f.name]), f"{owner_name}.{f.name}"
-                )
-                for f in fields_or_init_kwargs(clazz)
-                if f.name in x
-            }
-        )
+        if not isinstance(x, Mapping):
+            raise TypeError(f"{owner_name}: expected a mapping, got {type(x)}")
+        values = {}
+        for f in fields_or_init_kwargs(clazz):
+            if f.name not in x:
+                continue
+            current_field_name = f"{owner_name}.{f.name}"
+            if strict and f.annotation is None:
+                raise TypeError(f"{current_field_name}: annotation is not supported for {operation} conversion")
+            values[f.name] = from_dict_value(
+                x[f.name],
+                f.annotation or type(x[f.name]),
+                type(x[f.name]),
+                current_field_name,
+                strict=strict,
+                operation=operation,
+            )
+        result = clazz(**values)
     return result
+
+
+def from_dict(
+    clazz: type[T],
+    x: Mapping[Any, Any],
+    *,
+    strict: bool = False,
+    field_name: str | None = None,
+) -> T:
+    """Recursively decode dictionary-form values and construct a class instance."""
+
+    return from_dict_operation(clazz, x, strict=strict, field_name=field_name, operation="dict")

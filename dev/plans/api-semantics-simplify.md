@@ -5,7 +5,7 @@
 - Phase 1: Complete
 - Phase 2: Complete
 - Phase 3: Complete
-- Phase 4: Pending
+- Phase 4: Complete
 - Phase 5: Pending
 - Phase 6: Pending
 
@@ -227,7 +227,10 @@ execution adds, combines, or removes a declaration.
   `get_optional_type`, `get_collection_args`, `is_optional`,
   `annotation_origin`, `effective_type`, `union_member`, `enum_type`,
   `validate_enum_values`, `selected_target_fields`, `from_dict_value`,
-  `to_dict_value`, and `validate_selected_mapping`.
+  `to_dict_value`, `from_dict_operation`, `to_dict_operation`, and
+  `validate_selected_mapping`. The operation helpers are the shared owner
+  traversals that preserve the stable wrapper signatures while carrying
+  dictionary or JSON capability provenance.
 - `msup.cli`: `cliarg_from_annotations`, `error_exit`,
   `enum_argument_type`, `mapping_argument_type`, `argument_type`,
   `add_argument`, `add_fields`, `add_args`, `add_direct_args`,
@@ -746,7 +749,7 @@ diff --check` passed.
 
 ## Phase 4: Add strict recursive and shallow conversion
 
-**Status:** Pending
+**Status:** Complete
 
 1. Add and propagate `strict` through `from_dict_value`, `to_dict_value`,
    `from_dict`, `to_dict`, `from_json`, `to_json`, `kwargs_from_dict`,
@@ -801,6 +804,10 @@ selected targets remain uncalled.
 **Validation:** Run `uv run --group dev --extra pydantic pytest
 tests/test_basic.py tests/test_pydantic.py`, `./run.py type_check`,
 `./run.py lint_check`, `./run.py format_check`, and `git diff --check`.
+
+**Validation result:** The base and Pydantic command passed all 56 tests and 90
+parameterized subtests. `./run.py type_check`, `./run.py lint_check`,
+`./run.py format_check`, and `git diff --check` passed.
 
 ## Phase 5: Make CLI capability checks explicit and reuse conversion
 
