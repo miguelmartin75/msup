@@ -2,7 +2,7 @@
 
 ## Status
 
-- Phase 1: Pending
+- Phase 1: Complete
 - Phase 2: Pending
 - Phase 3: Pending
 - Phase 4: Pending
@@ -49,6 +49,8 @@ retain declarations with a leading underscore. Every public type, class,
 function, and method must have a behavior-focused docstring. Preserve the
 top-of-module forward declarations that summarize each module's intended
 interface and keep them synchronized with the implementations.
+Dataclass definitions are not repeated in those forward-declaration blocks;
+`Metadata`, `FieldSpec`, and `CliArg` each have one implementation definition.
 
 Python type aliases cannot own a runtime `__doc__` attribute. Document
 `Kwargs` with the adjacent string shown below. Every public class, function,
@@ -579,7 +581,7 @@ the repository reuse threshold.
 
 ## Phase 1: Separate reflection, capability, and strict type checking
 
-**Status:** Pending
+**Status:** Complete
 
 1. Add `is_annotation_supported` with its inline
    `Literal["type_check", "dict", "json"]` operation and add
@@ -612,7 +614,8 @@ the repository reuse threshold.
    including `FieldSpec` and all value, reflection, annotation, callable,
    boolean, and dictionary helpers. Do not add a leading-underscore
    declaration. Review docstrings manually and do not add tests for their
-   presence or contents.
+   presence or contents. Per the execution override, do not repeat dataclass
+   definitions in the forward-declaration block.
 7. Move the current relation predicate from `msup.cli:_contains_relation` to
    public `msup.base:contains_relation`. It is a schema query over reflected
    `FieldSpec.kwargs_relation`, not CLI behavior. Import it from `msup.cli` and
@@ -632,6 +635,13 @@ documented, with the stable subset matching the top-of-plan contract.
 tests/test_basic.py -k 'annotation or compat or selected_target'`,
 `./run.py type_check`, `./run.py lint_check`, `./run.py format_check`, and
 `git diff --check`.
+
+**Validation result:** `uv run --group dev --extra pydantic pytest
+tests/test_basic.py -k 'annotation or compat or selected_target'` passed with
+7 tests passed and 20 deselected. `uv run --group dev --extra pydantic pytest
+tests/test_basic.py tests/test_cli.py` passed with 82 tests. `./run.py
+type_check`, `./run.py lint_check`, `./run.py format_check`, and `git diff
+--check` passed.
 
 ## Phase 2: Decouple and simplify recursive relation conversion
 

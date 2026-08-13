@@ -6,40 +6,151 @@ from collections.abc import Callable as Callable2, Mapping
 from copy import deepcopy
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
+from functools import partial
 from types import UnionType
-from typing import Annotated, Any, Callable, TypeAliasType, TypeVar, Union, cast, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    Callable,
+    Literal,
+    TypeAliasType,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+    overload,
+)
 
 T = TypeVar("T")
 type Kwargs = dict[str, Any]
+"""Keyword arguments whose effective schema comes from a selected callable."""
 
 
 # fmt: off
-def to_kwargs(clazz: type | Callable[..., Any], x: Any) -> dict[str, Any]: ...
-def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = None) -> T: ...
-def kwargs_from_dict(target: type | Callable[..., Any], values: Mapping[str, Any], *, field_name: str = "kwargs") -> dict[str, Any]: ...
-def from_kwargs(
-    owner: type | Callable[..., Any],
-    values: Mapping[str, Any],
-    *,
-    field_name: str | None = None,
-) -> dict[str, Any]: ...
+def is_annotation_supported(annotation: Any, *, operation: Literal["type_check", "dict", "json"]) -> bool:
+    """Return whether msup completely supports an annotation for one operation."""
+    ...
+
+
+def is_value_of_type(value: Any, annotation: Any) -> bool:
+    """Return whether a Python value recursively matches an annotation without conversion."""
+    ...
+
+
 def to_dict(
-    x: Any, type_class: type | Callable[..., Any] | None = None, *, field_name: str | None = None
-) -> dict[str, Any]: ...
+    x: Any,
+    type_class: type | Callable[..., Any] | None = None,
+    *,
+    strict: bool = False,
+    field_name: str | None = None,
+) -> dict[str, Any]:
+    """Recursively encode declared fields into dictionary-form values."""
+    ...
+
+
+def from_dict(
+    clazz: type[T],
+    x: Mapping[Any, Any],
+    *,
+    strict: bool = False,
+    field_name: str | None = None,
+) -> T:
+    """Recursively decode dictionary-form values and construct a class instance."""
+    ...
+
+
 def to_json(
     x: Any,
     file_like=None,
     indent: int | None = 2,
     *,
     type_class: type | Callable[..., Any] | None = None,
-) -> str | None: ...
-def is_pydantic_model(candidate: type | object) -> bool: ...
-def is_structured_model(candidate: type | object) -> bool: ...
-def metadata_from_annotations(annotations: list[Any], field_name: str = "") -> "Metadata | None": ...
-def selected_target_fields(target: type | Callable[..., Any]) -> "list[FieldSpec]": ...
-def load_callable(name: str) -> Any: ...
-def dump_callable(value: Any) -> str: ...
-def str_to_bool(value: str) -> bool: ...
+    strict: bool = False,
+) -> str | None:
+    """Encode a value as JSON text or write it to a JSON destination."""
+    ...
+
+
+def from_json(
+    clazz: type[T],
+    s: str | None = None,
+    file_like=None,
+    path: str | None = None,
+    *,
+    strict: bool = False,
+) -> T:
+    """Read JSON input, recursively decode it, and construct a class instance."""
+    ...
+
+
+def to_kwargs(
+    target: type | Callable[..., Any],
+    x: Any,
+    *,
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Select a target's present top-level keyword-bindable values without conversion."""
+    ...
+
+
+@overload
+def from_kwargs(target: type[T], values: Mapping[str, Any], *, strict: bool = False) -> T:
+    """Filter keyword values and construct a class exactly once."""
+    ...
+
+
+@overload
+def from_kwargs(
+    target: Callable[..., T],
+    values: Mapping[str, Any],
+    *,
+    strict: bool = False,
+) -> partial[T]:
+    """Filter keyword values and return a partial without invoking the callable."""
+    ...
+
+
+def from_kwargs(
+    target: type[T] | Callable[..., T],
+    values: Mapping[str, Any],
+    *,
+    strict: bool = False,
+) -> T | partial[T]:
+    """Filter keyword values, then construct a class or partially bind a callable."""
+    ...
+
+
+def kwargs_from_dict(
+    target: type | Callable[..., Any],
+    values: Mapping[str, Any],
+    *,
+    strict: bool = False,
+    field_name: str = "kwargs",
+) -> dict[str, Any]:
+    """Recursively decode callable arguments without invoking or constructing the target."""
+    ...
+
+
+def load_callable(name: str) -> Any:
+    """Load a trusted callable from its canonical module-qualified reference."""
+    ...
+
+
+def dump_callable(value: Any) -> str:
+    """Return a canonical reference that reloads to the identical callable."""
+    ...
+
+
+def str_to_bool(value: str) -> bool:
+    """Convert a supported textual boolean spelling or raise TypeError."""
+    ...
+
+
+def dict_from_str(value: str) -> dict[Any, Any]:
+    """Load a dictionary from inline JSON text or a JSON file path."""
+    ...
 # fmt: on
 
 
@@ -62,7 +173,7 @@ else:
 
 @dataclass(frozen=True, kw_only=True)
 class Metadata:
-    """Shared field metadata; kwargs_for links dependent kwargs to its selector."""
+    """Field metadata, including an optional relation to a callable selector."""
 
     kwargs_for: str | None = None
 
@@ -80,6 +191,8 @@ class FieldSpec:
 
 
 def unwrap_annotated(annotation: Any) -> tuple[Any, list[Any]]:
+    """Separate an Annotated base type from its ordered metadata values."""
+
     if get_origin(annotation) is Annotated:
         annotation, *annotations = get_args(annotation)
     else:
@@ -88,12 +201,14 @@ def unwrap_annotated(annotation: Any) -> tuple[Any, list[Any]]:
 
 
 def normalize_annotation(annotation: Any) -> Any:
+    """Remove Annotated metadata and unwrap one runtime type alias."""
+
     annotation, _ = unwrap_annotated(annotation)
     return annotation.__value__ if isinstance(annotation, TypeAliasType) else annotation
 
 
 def metadata_from_annotations(annotations: list[Any], field_name: str = "") -> Metadata | None:
-    """Returns the sole Metadata annotation and rejects duplicates."""
+    """Return the sole Metadata annotation and reject duplicates."""
 
     metadata = [value for value in annotations if isinstance(value, Metadata)]
     if len(metadata) > 1:
@@ -104,6 +219,8 @@ def metadata_from_annotations(annotations: list[Any], field_name: str = "") -> M
 
 
 def is_pydantic_model(candidate: type | object) -> bool:
+    """Return whether a candidate is a supported Pydantic v2 model or instance."""
+
     clazz = candidate if inspect.isclass(candidate) else type(candidate)
     if PydanticBaseModel is None:
         result = False
@@ -117,10 +234,14 @@ def is_pydantic_model(candidate: type | object) -> bool:
 
 
 def is_structured_model(candidate: type | object) -> bool:
+    """Return whether a candidate is a dataclass or supported Pydantic model."""
+
     return is_dataclass(candidate) or is_pydantic_model(candidate)
 
 
 def from_json(clazz: type[T], s: str | None = None, file_like=None, path: str | None = None) -> T:
+    """Read JSON input, recursively decode it, and construct a class instance."""
+
     if path:
         assert os.path.exists(path), f"{path} does not exist"
         with open(path) as in_f:
@@ -140,6 +261,8 @@ def to_json(
     *,
     type_class: type | Callable[..., Any] | None = None,
 ) -> str | None:
+    """Encode a value as JSON text or write it to a JSON destination."""
+
     if file_like:
         if isinstance(file_like, str):
             assert file_like.endswith(".json"), f"file should end with json, got: {file_like}"
@@ -157,10 +280,14 @@ def to_json(
 
 
 def has_default_value(f: FieldSpec) -> bool:
+    """Return whether a reflected field declares a value or factory default."""
+
     return f.default is not MISSING or f.default_factory is not MISSING
 
 
 def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
+    """Reflect declared model fields or explicit callable parameters and relations."""
+
     is_function_or_method = inspect.isfunction(target) or inspect.ismethod(target)
     assert inspect.isclass(target) or is_function_or_method, f"{target} is not a class, function, or method"
     result = []
@@ -224,13 +351,19 @@ def fields_or_init_kwargs(target: type | Callable[..., Any]) -> list[FieldSpec]:
     return result
 
 
+def contains_relation(owner: type | Callable[..., Any]) -> bool:
+    """Return whether a reflected owner has a field linked to a selector."""
+
+    return any(field.kwargs_relation is not None for field in fields_or_init_kwargs(owner))
+
+
 def load_callable(name: str) -> Any:
-    """Loads a trusted callable from a canonical module.qualname reference."""
+    """Load a trusted callable from its canonical module-qualified reference."""
     return pkgutil.resolve_name(name)
 
 
 def dump_callable(value: Any) -> str:
-    """Returns a canonical reference only when it reloads to the same callable."""
+    """Return a canonical reference that reloads to the identical callable."""
 
     if not (inspect.isclass(value) or inspect.isfunction(value) or inspect.ismethod(value)):
         raise TypeError(f"expected an importable class, function, or method, got {type(value)}")
@@ -245,6 +378,8 @@ def dump_callable(value: Any) -> str:
 
 
 def str_to_bool(value: str) -> bool:
+    """Convert a supported textual boolean spelling or raise TypeError."""
+
     normalized = value.lower()
     if normalized in ("y", "yes", "on", "1", "true", "t"):
         result = True
@@ -256,10 +391,14 @@ def str_to_bool(value: str) -> bool:
 
 
 def maybe_idx(xs: tuple[Any, ...] | list[Any], idx: int, default: Any = None) -> Any:
+    """Return an indexed item or a default when the index is past the end."""
+
     return xs[idx] if idx < len(xs) else default
 
 
 def get_optional_type(annotation: Any) -> Any | None:
+    """Return the non-None member of an optional annotation, if present."""
+
     annotation, _ = unwrap_annotated(annotation)
     args = get_args(annotation)
     if get_origin(annotation) in (Union, UnionType) and len(args) == 2 and type(None) in args:
@@ -270,12 +409,14 @@ def get_optional_type(annotation: Any) -> Any | None:
 
 
 def get_collection_args(annotation: Any, count: int = 0) -> tuple[Any, ...]:
+    """Return normalized key or item annotations for a supported collection."""
+
     annotation, _ = unwrap_annotated(annotation)
     origin = annotation_origin(annotation)
     args = get_args(annotation)
     if origin is dict:
         result = (maybe_idx(args, 0, Any), maybe_idx(args, 1, Any))
-    elif origin is list:
+    elif origin in (list, set):
         item_type = maybe_idx(args, 0, Any)
         result = (item_type,) * count if count else (item_type,)
     elif origin is tuple:
@@ -291,15 +432,21 @@ def get_collection_args(annotation: Any, count: int = 0) -> tuple[Any, ...]:
 
 
 def is_optional(annotation: Any) -> bool:
+    """Return whether an annotation is a two-member union with None."""
+
     return get_optional_type(annotation) is not None
 
 
 def annotation_origin(annotation: Any) -> Any:
+    """Return an annotation's runtime origin after removing Annotated metadata."""
+
     annotation, _ = unwrap_annotated(annotation)
     return get_origin(annotation) or annotation
 
 
 def effective_type(annotation: Any, field_name: str) -> Any:
+    """Return a CLI annotation with optionality removed and reject other unions."""
+
     annotation, _ = unwrap_annotated(annotation)
     optional_type = get_optional_type(annotation)
     if optional_type is not None:
@@ -312,11 +459,51 @@ def effective_type(annotation: Any, field_name: str) -> Any:
 
 
 def union_member(annotation: Any, concrete_type: type, field_name: str = "value") -> Any:
+    """Select the single best union member for a coercive source type."""
+
     candidates = []
     for member in get_args(annotation):
         if member is type(None):
             continue
-        compatible, _ = is_compat(member, concrete_type)
+        optional_type = get_optional_type(member)
+        if concrete_type is type(None):
+            compatible = optional_type is not None
+        elif optional_type is not None:
+            try:
+                union_member(member, concrete_type, field_name)
+            except TypeError:
+                compatible = False
+            else:
+                compatible = True
+        else:
+            origin = annotation_origin(member)
+            concrete_origin = annotation_origin(concrete_type)
+            if origin in (Union, UnionType):
+                try:
+                    union_member(member, concrete_type, field_name)
+                except TypeError:
+                    compatible = False
+                else:
+                    compatible = True
+            elif member is Any:
+                compatible = True
+            elif (enum_class := enum_type(member)) is not None:
+                validate_enum_values(enum_class, field_name)
+                compatible = concrete_origin is enum_class or any(
+                    type(enum_member.value) is concrete_origin for enum_member in enum_class
+                )
+            elif is_structured_model(member):
+                compatible = concrete_origin in (member, dict, str)
+            elif origin is dict:
+                compatible = concrete_origin in (dict, str)
+            elif origin in (list, tuple):
+                compatible = concrete_origin in (list, tuple)
+            elif origin is Callable2:
+                compatible = concrete_origin is str
+            elif origin in (int, float, bool, str) and concrete_origin in (int, float, bool, str):
+                compatible = True
+            else:
+                compatible = origin is concrete_origin
         if compatible:
             candidates.append(member)
 
@@ -333,6 +520,8 @@ def union_member(annotation: Any, concrete_type: type, field_name: str = "value"
 
 
 def enum_type(annotation: Any) -> type[Enum] | None:
+    """Return the Enum subclass represented by an annotation, if any."""
+
     origin = annotation_origin(annotation)
     if inspect.isclass(origin) and issubclass(origin, Enum):
         result = origin
@@ -342,75 +531,137 @@ def enum_type(annotation: Any) -> type[Enum] | None:
 
 
 def validate_enum_values(enum_type: type[Enum], field_name: str) -> None:
+    """Reject enums whose values cannot use msup's scalar representation."""
+
     supported_types = (str, int, float, bool)
     if any(type(member.value) not in supported_types for member in enum_type):
         raise TypeError(f"{field_name}: {enum_type.__name__} values must be str, int, float, or bool")
 
 
-def is_compat(field_type: Any, concrete_type: type) -> tuple[bool, Any | None]:
-    optional_type = get_optional_type(field_type)
-    if concrete_type is type(None):
-        return optional_type is not None, type(None) if optional_type is not None else None
-    elif optional_type is not None:
-        return is_compat(optional_type, concrete_type)
-    else:
-        origin = annotation_origin(field_type)
-        concrete_origin = annotation_origin(concrete_type)
-        if origin in (Union, UnionType):
-            try:
-                result = union_member(field_type, concrete_type)
-            except TypeError:
-                return False, None
-            return True, result
-        elif field_type is Any:
-            return True, Any
-        elif (enum_class := enum_type(field_type)) is not None:
-            validate_enum_values(enum_class, "value")
-            result = concrete_origin is enum_class or any(
-                type(member.value) is concrete_origin for member in enum_class
-            )
-            return result, enum_class if result else None
-        elif is_structured_model(field_type):
-            result = concrete_origin in (field_type, dict, str)
-            return result, field_type if result else None
+def is_annotation_supported(
+    annotation: Any,
+    *,
+    operation: Literal["type_check", "dict", "json"],
+) -> bool:
+    """Return whether msup completely supports an annotation for one operation."""
+
+    if operation not in ("type_check", "dict", "json"):
+        raise ValueError(f"unknown annotation operation: {operation}")
+
+    def check(current: Any, visiting: set[Any]) -> bool:
+        current = normalize_annotation(current)
+        origin = annotation_origin(current)
+        if current in visiting:
+            result = True
+        elif current is Any:
+            result = operation != "json"
+        elif current is type(None):
+            result = True
+        elif origin in (Union, UnionType):
+            result = all(check(member, visiting) for member in get_args(current))
         elif origin is dict:
-            result = concrete_origin in (dict, str)
-            return result, dict if result else None
-        elif origin in (list, tuple):
-            result = concrete_origin in (list, tuple)
-            return result, origin if result else None
-        elif origin is Callable2:
-            result = concrete_origin is str
-            return result, Callable2 if result else None
-        elif origin in (int, float, bool, str) and concrete_origin in (int, float, bool, str):
-            return True, origin
+            key_type, value_type = get_collection_args(current)
+            if operation == "json":
+                result = key_type is str and check(value_type, visiting)
+            else:
+                result = check(key_type, visiting) and check(value_type, visiting)
+        elif origin in (list, tuple, set):
+            args = get_args(current)
+            if not args:
+                item_types = (Any,)
+            elif origin is tuple and len(args) == 2 and args[1] is Ellipsis:
+                item_types = (args[0],)
+            else:
+                item_types = args
+            result = (operation == "type_check" or origin is not set) and all(
+                check(item, visiting) for item in item_types
+            )
+        elif origin in (int, float, str, bool, Callable2):
+            result = True
+        elif (enum_class := enum_type(current)) is not None:
+            if operation == "type_check":
+                result = True
+            else:
+                scalar_types = (str, int, float, bool)
+                result = all(type(member.value) in scalar_types for member in enum_class)
         else:
-            return origin is concrete_origin, origin if origin is concrete_origin else None
+            if is_structured_model(current):
+                if operation == "type_check":
+                    result = True
+                else:
+                    visiting.add(current)
+                    result = all(
+                        field.kwargs_relation is not None
+                        or (field.annotation is not None and check(field.annotation, visiting))
+                        for field in fields_or_init_kwargs(current)
+                    )
+                    visiting.remove(current)
+            elif operation == "type_check" and inspect.isclass(origin):
+                result = True
+            else:
+                result = False
+        return result
+
+    return check(annotation, set())
 
 
-def _conversion_annotation_supported(annotation: Any) -> bool:
+def is_value_of_type(value: Any, annotation: Any) -> bool:
+    """Return whether a Python value recursively matches an annotation without conversion."""
+
     annotation = normalize_annotation(annotation)
-    origin = annotation_origin(annotation)
-    if annotation in (Any, type(None)):
+    if not is_annotation_supported(annotation, operation="type_check"):
+        result = False
+    elif annotation is Any:
         result = True
-    elif origin in (Union, UnionType):
-        result = all(_conversion_annotation_supported(member) for member in get_args(annotation))
-    elif origin is dict:
-        key_type, value_type = get_collection_args(annotation)
-        result = _conversion_annotation_supported(key_type) and _conversion_annotation_supported(value_type)
-    elif origin in (list, tuple):
-        result = all(_conversion_annotation_supported(item) for item in get_collection_args(annotation))
-    elif origin in (int, float, str, bool, Callable2):
-        result = True
-    elif enum_type(annotation) is not None:
-        result = True
+    elif annotation is type(None):
+        result = value is None
     else:
-        result = is_structured_model(annotation)
+        origin = annotation_origin(annotation)
+        optional_type = get_optional_type(annotation)
+        if optional_type is not None:
+            result = value is None or is_value_of_type(value, optional_type)
+        elif origin in (Union, UnionType):
+            result = any(is_value_of_type(value, member) for member in get_args(annotation))
+        elif (enum_class := enum_type(annotation)) is not None:
+            result = isinstance(value, enum_class)
+        elif origin is Callable2:
+            result = callable(value)
+        elif origin in (int, float, str, bool):
+            result = type(value) is origin
+        elif origin is dict:
+            key_type, value_type = get_collection_args(annotation)
+            result = isinstance(value, dict) and all(
+                is_value_of_type(key, key_type) and is_value_of_type(item, value_type) for key, item in value.items()
+            )
+        elif origin is list:
+            (item_type,) = get_collection_args(annotation)
+            result = isinstance(value, list) and all(is_value_of_type(item, item_type) for item in value)
+        elif origin is set:
+            args = get_args(annotation)
+            item_type = maybe_idx(args, 0, Any)
+            result = isinstance(value, set) and all(is_value_of_type(item, item_type) for item in value)
+        elif origin is tuple:
+            args = get_args(annotation)
+            if not isinstance(value, tuple):
+                result = False
+            elif not args:
+                result = True
+            elif len(args) == 2 and args[1] is Ellipsis:
+                result = all(is_value_of_type(item, args[0]) for item in value)
+            else:
+                item_types = get_collection_args(annotation)
+                result = len(value) == len(item_types) and all(
+                    is_value_of_type(item, item_types[index]) for index, item in enumerate(value)
+                )
+        elif is_structured_model(annotation):
+            result = isinstance(value, annotation)
+        else:
+            result = isinstance(value, origin)
     return result
 
 
 def selected_target_fields(target: type | Callable[..., Any]) -> list[FieldSpec]:
-    """Reflects a selected target's supported explicit signature without invoking it."""
+    """Reflect a selected target's explicit keyword-capable signature without invoking it."""
 
     if not (inspect.isclass(target) or inspect.isfunction(target) or inspect.ismethod(target)):
         raise TypeError(f"{target}: selected targets must be classes, functions, or methods")
@@ -432,17 +683,19 @@ def selected_target_fields(target: type | Callable[..., Any]) -> list[FieldSpec]
             raise TypeError(f"{name}: selected target parameters cannot use **kwargs")
         annotation = hints.get(name, parameter.annotation)
         if annotation is inspect.Parameter.empty:
-            raise TypeError(f"{name}: selected target parameters must have an annotation")
-        annotation, annotations = unwrap_annotated(annotation)
-        annotation = normalize_annotation(annotation)
-        if not _conversion_annotation_supported(annotation):
-            raise TypeError(f"{name}: unsupported selected target annotation: {annotation}")
+            annotation = None
+            annotations = []
+        else:
+            annotation, annotations = unwrap_annotated(annotation)
+            annotation = normalize_annotation(annotation)
         default = MISSING if parameter.default is inspect._empty else parameter.default
         result.append(FieldSpec(name, annotation, annotations, default, MISSING))
     return result
 
 
 def dict_from_str(x: str) -> dict[Any, Any]:
+    """Load a dictionary from inline JSON text or a JSON file path."""
+
     assert isinstance(x, str)
     if x.startswith("{"):
         result = json.loads(x)
@@ -456,6 +709,8 @@ def dict_from_str(x: str) -> dict[Any, Any]:
 
 
 def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: str) -> Any:
+    """Recursively decode one dictionary-form value according to its annotation."""
+
     origin = annotation_origin(field_type)
     if x is None:
         if is_optional(field_type) or field_type is Any:
@@ -493,7 +748,19 @@ def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: st
                 else:
                     raise TypeError(f"{field_name}: expected a callable or importable callable reference")
             else:
-                compatible, _ = is_compat(field_type, concrete_type)
+                concrete_origin = annotation_origin(concrete_type)
+                if field_type is Any:
+                    compatible = True
+                elif is_structured_model(field_type):
+                    compatible = concrete_origin in (field_type, dict, str)
+                elif origin is dict:
+                    compatible = concrete_origin in (dict, str)
+                elif origin in (list, tuple):
+                    compatible = concrete_origin in (list, tuple)
+                elif origin in (int, float, bool, str) and concrete_origin in (int, float, bool, str):
+                    compatible = True
+                else:
+                    compatible = origin is concrete_origin
                 if not compatible:
                     raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
             if enum_class is not None or origin is Callable2:
@@ -547,6 +814,8 @@ def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: st
 
 
 def to_dict_value(x: Any, field_type: Any) -> Any:
+    """Recursively encode one Python value according to its annotation."""
+
     origin = annotation_origin(field_type)
     optional_type = get_optional_type(field_type)
     if x is None:
@@ -586,6 +855,8 @@ def to_dict_value(x: Any, field_type: Any) -> Any:
 def to_dict(
     x: Any, type_class: type | Callable[..., Any] | None = None, *, field_name: str | None = None
 ) -> dict[str, Any]:
+    """Recursively encode declared fields into dictionary-form values."""
+
     result: dict[str, Any] = {}
     mapping = x if isinstance(x, Mapping) else None
     owner = type(x) if type_class is None else type_class
@@ -636,6 +907,8 @@ def to_dict(
 
 
 def to_kwargs(clazz: type | Callable[..., Any], x: Any) -> dict[str, Any]:
+    """Select a target's present top-level keyword-bindable values without conversion."""
+
     result: dict[str, Any] = {}
     for f in fields_or_init_kwargs(clazz):
         if isinstance(x, Mapping):
@@ -741,9 +1014,7 @@ def from_kwargs(
                     raise TypeError(f"{current_field_name}.{parameter.name}: missing required target parameter")
         elif value is not MISSING:
             field_type = get_optional_type(f.annotation) or normalize_annotation(f.annotation) or type(value)
-            if inspect.isclass(field_type) and any(
-                field.kwargs_relation is not None for field in fields_or_init_kwargs(field_type)
-            ):
+            if inspect.isclass(field_type) and contains_relation(field_type):
                 if isinstance(value, field_type):
                     converted = value
                 else:
@@ -761,9 +1032,11 @@ def from_kwargs(
 
 
 def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = None) -> T:
+    """Recursively decode dictionary-form values and construct a class instance."""
+
     owner_name = field_name or clazz.__qualname__
-    if any(field.kwargs_relation is not None for field in fields_or_init_kwargs(clazz)):
-        values = from_kwargs(clazz, x, field_name=owner_name)
+    if contains_relation(clazz):
+        values = cast(Any, from_kwargs)(clazz, x, field_name=owner_name)
         if is_pydantic_model(clazz):
             result = cast(Any, clazz).model_validate(values)
         else:

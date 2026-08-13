@@ -10,6 +10,7 @@ from typing import Any, Callable, cast, get_args, get_origin
 from msup.base import (
     FieldSpec,
     Metadata,
+    contains_relation,
     enum_type,
     effective_type,
     fields_or_init_kwargs,
@@ -42,10 +43,6 @@ def cliarg_from_annotations(annotations: list[Any]) -> CliArg | None:
     metadata = metadata_from_annotations(annotations)
     result = metadata if isinstance(metadata, CliArg) else None
     return result
-
-
-def _contains_relation(owner: type | Callable[..., Any]) -> bool:
-    return any(field.kwargs_relation is not None for field in fields_or_init_kwargs(owner))
 
 
 def error_exit(msg: str, code: int = 1):
@@ -94,7 +91,7 @@ def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], An
         inspect.isclass(annotation)
         and annotation.__module__ not in ("builtins", "collections.abc")
         and enum_type(annotation) is None
-        and _contains_relation(annotation)
+        and contains_relation(annotation)
     ):
         result = mapping_argument_type(field_name)
     elif origin is list:
@@ -189,7 +186,7 @@ def _add_fields(parser, command_fields, prefix="", short_prefix=None, force_no_d
             inspect.isclass(field_type)
             and field_type.__module__ not in ("builtins", "collections.abc")
             and enum_type(field_type) is None
-            and _contains_relation(field_type)
+            and contains_relation(field_type)
         ):
             _add_fields(parser, fields_or_init_kwargs(field_type), name, cli_arg.short, True)
 
@@ -282,6 +279,8 @@ def _target_options(parser, targets, path, args=None):
     for field in targets[path]:
         field_path = (*path, field.name)
         name = ".".join(field_path)
+        if field.annotation is None:
+            raise TypeError(f"{'.'.join(path)}: {field.name}: selected target parameters must have an annotation")
         field_type = effective_type(field.annotation, name)
         if args is None:
             cli_arg = cliarg_from_annotations(field.annotations) or CliArg()
@@ -289,7 +288,7 @@ def _target_options(parser, targets, path, args=None):
                 raise TypeError(f"{name}: selected target parameters cannot define short or positional options")
             _add_argument(parser, [f"--{name}"], {"dest": name}, field.annotation, name, cli_arg.help, False)
             if is_structured_model(field_type):
-                if _contains_relation(field_type):
+                if contains_relation(field_type):
                     raise TypeError(f"{name}: selected target parameters cannot contain kwargs_for relations")
                 targets[field_path] = fields_or_init_kwargs(field_type)
                 _target_options(parser, targets, field_path)
@@ -553,7 +552,7 @@ def cli(
             inspect.isclass(command_type)
             and command_type.__module__ not in ("builtins", "collections.abc")
             and enum_type(command_type) is None
-            and _contains_relation(command_type)
+            and contains_relation(command_type)
         ):
             command_type = None
         metadata_dest = "_msup_command"

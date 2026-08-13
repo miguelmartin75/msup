@@ -6,7 +6,7 @@ from functools import partial
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Annotated, Any, Callable, Union, cast
+from typing import Annotated, Any, Callable, Literal, Union, cast
 
 from msup.base import (
     Kwargs,
@@ -19,7 +19,8 @@ from msup.base import (
     from_dict_value,
     from_json,
     from_kwargs,
-    is_compat,
+    is_annotation_supported,
+    is_value_of_type,
     kwargs_from_dict,
     load_callable,
     metadata_from_annotations,
@@ -95,6 +96,17 @@ class BasicClass:
     def __init__(self, name: Annotated[str, CliArg(help="ignored")], count: int | None = None):
         self.name = name
         self.count = count
+
+
+@dataclass
+class RecursiveNode:
+    child: "RecursiveNode | None" = None
+
+
+@dataclass
+class RecursiveUnsupportedNode:
+    child: "RecursiveUnsupportedNode | None" = None
+    values: set[int] = dataclass_field(default_factory=set)
 
 
 class VarArgsClass:
@@ -467,7 +479,7 @@ class BasicTests(unittest.TestCase):
         def unsupported(values: set[int]) -> None:
             pass
 
-        with self.assertRaisesRegex(TypeError, "StrictNestedRelationOwner.nested.kwargs: values: unsupported"):
+        with self.assertRaisesRegex(TypeError, "StrictNestedRelationOwner.nested.kwargs.values: missing"):
             from_dict(StrictNestedRelationOwner, {"nested": {"target": unsupported, "kwargs": {}}})
         with self.assertRaisesRegex(TypeError, "StrictNestedRelationOwner.nested.kwargs.unknown: unknown"):
             to_dict(StrictNestedRelationOwner(StrictNestedRelationValues(kwargs={"unknown": 1})))
@@ -629,11 +641,9 @@ class BasicTests(unittest.TestCase):
         self.assertEqual([field.name for field in selected_target_fields(ClassTarget)], ["value", "enabled"])
         self.assertEqual([field.name for field in selected_target_fields(keyword_only)], ["value", "label"])
         cases = [
-            (unannotated, "must have an annotation"),
             (positional_only, "cannot be positional-only"),
             (variadic_positional, "cannot use \\*args"),
             (variadic_keyword, "cannot use \\*\\*kwargs"),
-            (unsupported, "unsupported selected target annotation"),
             (unresolved, "selected target annotations cannot be resolved"),
             (CallableInstance(), "selected targets must be classes, functions, or methods"),
             (3, "selected targets must be classes, functions, or methods"),
@@ -642,6 +652,48 @@ class BasicTests(unittest.TestCase):
             with self.subTest(target=target):
                 with self.assertRaisesRegex(TypeError, message):
                     selected_target_fields(cast(Any, target))
+        reflected = selected_target_fields(unsupported)
+        self.assertEqual([(field.name, field.annotation) for field in reflected], [("values", set[int])])
+        reflected = selected_target_fields(unannotated)
+        self.assertEqual([(field.name, field.annotation) for field in reflected], [("value", None)])
+
+    def test_annotation_capability_and_exact_value_checking_are_operation_specific(self):
+        cases: list[tuple[Any, Literal["type_check", "dict", "json"], bool]] = [
+            (set[int], "type_check", True),
+            (set[int], "dict", False),
+            (set[int], "json", False),
+            (list, "type_check", True),
+            (list, "dict", True),
+            (list, "json", False),
+            (tuple, "type_check", True),
+            (tuple, "dict", True),
+            (tuple, "json", False),
+            (set, "type_check", True),
+            (set, "dict", False),
+            (set, "json", False),
+            (dict[str, int], "json", True),
+            (dict[int, int], "json", False),
+            (Any, "dict", True),
+            (Any, "json", False),
+            (InvalidState, "type_check", True),
+            (InvalidState, "dict", False),
+            (BasicClass, "type_check", True),
+            (BasicClass, "dict", False),
+            (tuple[set[int], ...], "dict", False),
+            (tuple[set[int], ...], "json", False),
+            (RecursiveNode, "dict", True),
+            (RecursiveNode, "json", True),
+            (RecursiveUnsupportedNode, "dict", False),
+        ]
+        for annotation, operation, expected in cases:
+            with self.subTest(annotation=annotation, operation=operation):
+                self.assertEqual(is_annotation_supported(annotation, operation=operation), expected)
+
+        self.assertTrue(is_value_of_type({1, 2}, set[int]))
+        self.assertFalse(is_value_of_type({"1", "2"}, set[int]))
+        self.assertFalse(is_value_of_type(["1"], list[int]))
+        self.assertFalse(is_value_of_type(True, int))
+        self.assertTrue(is_value_of_type((1, "two"), tuple))
 
     def test_representative_conversion_types_round_trip(self):
         value = from_dict(
@@ -712,8 +764,6 @@ class BasicTests(unittest.TestCase):
             from_dict(EnumValues, {**serialized, "child": {"state": "unknown"}})
         with self.assertRaisesRegex(TypeError, "invalid.*must be str, int, float, or bool"):
             from_dict_value("not", InvalidState, str, "invalid")
-        with self.assertRaisesRegex(TypeError, "value.*must be str, int, float, or bool"):
-            is_compat(InvalidState, str)
 
     def test_ambiguous_unions_and_invalid_dict_strings_are_rejected(self):
         @dataclass
@@ -756,10 +806,8 @@ class BasicTests(unittest.TestCase):
         self.assertIs(to_dict(Owner(child))["payload"], child)
         self.assertEqual(to_dict(OptionalOwner()), {"payload": None})
         self.assertEqual(effective_type(list[int] | None, "values"), list[int])
-        self.assertEqual(is_compat(dict[int, float], str), (True, dict))
         self.assertEqual(from_dict_value(["1"], list[int], list, "values"), [1])
         self.assertEqual(to_dict_value([1], list[int]), [1])
-        self.assertEqual(is_compat(int, dict), (False, None))
         with self.assertRaisesRegex(TypeError, "non-optional union"):
             effective_type(int | str, "value")
 
