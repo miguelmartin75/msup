@@ -4,7 +4,7 @@
 
 - Phase 1: Complete
 - Phase 2: Complete
-- Phase 3: Pending
+- Phase 3: Complete
 - Phase 4: Pending
 - Phase 5: Pending
 - Phase 6: Pending
@@ -700,7 +700,7 @@ diff --check` passed.
 
 ## Phase 3: Implement the shallow kwargs contract
 
-**Status:** Pending
+**Status:** Complete
 
 1. Add `functools.partial` and the class/function overloads to `msup/base.py`.
    Keep top-level reflection direct and exclude parameters that cannot be bound
@@ -738,6 +738,11 @@ continues to pass independently.
 tests/test_basic.py -k 'kwargs or relation'`, then `uv run --group dev --extra
 pydantic pytest tests/test_basic.py tests/test_pydantic.py`, `./run.py type_check`,
 `./run.py lint_check`, `./run.py format_check`, and `git diff --check`.
+
+**Validation result:** The focused command passed with 10 tests passed and 22
+deselected. The complete base and Pydantic command passed all 48 tests.
+`./run.py type_check`, `./run.py lint_check`, `./run.py format_check`, and `git
+diff --check` passed.
 
 ## Phase 4: Add strict recursive and shallow conversion
 

@@ -412,10 +412,6 @@ class BasicTests(unittest.TestCase):
             },
         )
         self.assertEqual(from_json(RelationValues, s=to_json(value, indent=None)), value)
-        self.assertEqual(
-            from_kwargs(direct_relation_values, {"target": relation_target, "kwargs": {"value": "4"}}),
-            {"target": relation_target, "kwargs": {"value": 4}},
-        )
         self.assertEqual(to_dict({}, type_class=direct_relation_values), {})
         self.assertEqual(
             to_dict({"target": relation_target}, type_class=direct_relation_values),
@@ -503,8 +499,6 @@ class BasicTests(unittest.TestCase):
             kwargs_from_dict(relation_target, {}, field_name="RelationValues.kwargs")
         with self.assertRaisesRegex(TypeError, "RelationValues.kwargs: expected a mapping"):
             kwargs_from_dict(relation_target, cast(Any, []), field_name="RelationValues.kwargs")
-        with self.assertRaisesRegex(TypeError, "direct_relation_values.target: missing selector"):
-            from_kwargs(direct_relation_values, {"kwargs": {"value": 1}})
         with self.assertRaisesRegex(TypeError, "direct_relation_values.kwargs: missing selector"):
             to_dict({"kwargs": {"value": 1}}, type_class=direct_relation_values)
 
@@ -530,6 +524,12 @@ class BasicTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "direct.kwargs.value: missing required target parameter"):
             kwargs_from_dict(direct_default_relation_owner, {}, field_name="direct")
         self.assertEqual((direct_owner_calls, direct_selected_target_calls), (0, 0))
+
+        bound = from_kwargs(direct_default_relation_owner, prepared)
+        self.assertIsInstance(bound, partial)
+        self.assertEqual((direct_owner_calls, direct_selected_target_calls), (0, 0))
+        bound()
+        self.assertEqual((direct_owner_calls, direct_selected_target_calls), (1, 0))
 
     def test_unbound_method_kwargs_relations_retain_receiver_without_invocation(self):
         global direct_owner_calls, direct_selected_target_calls
@@ -937,6 +937,75 @@ class BasicTests(unittest.TestCase):
 
     def test_to_kwargs_accepts_regular_class_instances(self):
         self.assertEqual(to_kwargs(BasicClass, BasicClass("ok", 3)), {"name": "ok", "count": 3})
+
+    def test_shallow_kwargs_construct_classes_and_bind_functions(self):
+        factory_calls = 0
+        function_calls = 0
+
+        def default_values() -> list[int]:
+            nonlocal factory_calls
+            factory_calls += 1
+            return [3]
+
+        @dataclass
+        class Config:
+            required: int
+            values: list[int] = dataclass_field(default_factory=default_values)
+
+        def run(required: int, supplied: int, defaulted: str = "default") -> tuple[int, int, str]:
+            nonlocal function_calls
+            function_calls += 1
+            return required, supplied, defaulted
+
+        nested_values = [2]
+        projected = to_kwargs(
+            Config,
+            {"self": object(), "required": 1, "values": nested_values, "ignored": object()},
+        )
+        self.assertEqual(projected, {"required": 1, "values": [2]})
+        self.assertIs(projected["values"], nested_values)
+
+        source = {"self": object(), "required": 1, "ignored": object()}
+        self.assertEqual(to_kwargs(Config, source), {"required": 1})
+        self.assertEqual(factory_calls, 0)
+        config = from_kwargs(Config, source)
+        self.assertEqual(config, Config(1, [3]))
+        self.assertEqual(factory_calls, 1)
+
+        bound = from_kwargs(run, {"supplied": 2, "ignored": object()})
+        self.assertIsInstance(bound, partial)
+        self.assertEqual(bound.keywords, {"supplied": 2})
+        self.assertEqual(function_calls, 0)
+        self.assertEqual(bound(required=1), (1, 2, "default"))
+        self.assertEqual(function_calls, 1)
+
+    def test_shallow_kwargs_follow_callable_receiver_signatures(self):
+        def keyword_shapes(positional_only: int, /, keyword: int, *args: int, named: int, **options: int) -> None:
+            pass
+
+        receiver = MethodFieldValues()
+        self.assertEqual(
+            to_kwargs(function_self_cls_values, {"self": 1, "cls": "owner", "ignored": None}),
+            {"self": 1, "cls": "owner"},
+        )
+        self.assertEqual(
+            to_kwargs(
+                keyword_shapes,
+                {"positional_only": 1, "keyword": 2, "args": (3,), "named": 4, "options": {}},
+            ),
+            {"keyword": 2, "named": 4},
+        )
+
+        unbound = from_kwargs(
+            MethodFieldValues.method,
+            {"self": receiver, "required": 2, "ignored": None},
+        )
+        self.assertIs(unbound.keywords["self"], receiver)
+        self.assertEqual(unbound(), (2, "default value"))
+
+        bound = from_kwargs(receiver.method, {"self": object(), "required": 3, "ignored": None})
+        self.assertNotIn("self", bound.keywords)
+        self.assertEqual(bound(), (3, "default value"))
 
     def test_conversion_rejects_incompatible_values_and_fixed_tuple_lengths(self):
         @dataclass

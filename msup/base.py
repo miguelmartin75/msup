@@ -954,16 +954,24 @@ def to_dict(
     return result
 
 
-def to_kwargs(clazz: type | Callable[..., Any], x: Any) -> dict[str, Any]:
+def to_kwargs(
+    target: type | Callable[..., Any],
+    x: Any,
+    *,
+    strict: bool = False,
+) -> dict[str, Any]:
     """Select a target's present top-level keyword-bindable values without conversion."""
 
+    del strict
     result: dict[str, Any] = {}
-    for f in fields_or_init_kwargs(clazz):
+    for parameter in inspect.signature(target).parameters.values():
+        if parameter.kind not in (parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY):
+            continue
         if isinstance(x, Mapping):
-            if f.name in x:
-                result[f.name] = x[f.name]
-        elif hasattr(x, f.name):
-            result[f.name] = getattr(x, f.name)
+            if parameter.name in x:
+                result[parameter.name] = x[parameter.name]
+        elif hasattr(x, parameter.name):
+            result[parameter.name] = getattr(x, parameter.name)
     return result
 
 
@@ -1046,15 +1054,35 @@ def kwargs_from_dict(
     return result
 
 
+@overload
+def from_kwargs(target: type[T], values: Mapping[str, Any], *, strict: bool = False) -> T:
+    """Filter keyword values and construct a class exactly once."""
+
+
+@overload
 def from_kwargs(
-    owner: type | Callable[..., Any],
+    target: Callable[..., T],
     values: Mapping[str, Any],
     *,
-    field_name: str | None = None,
-) -> dict[str, Any]:
-    """Temporarily delegate recursive callable argument decoding without invocation."""
+    strict: bool = False,
+) -> partial[T]:
+    """Filter keyword values and return a partial without invoking the callable."""
 
-    return kwargs_from_dict(owner, values, field_name=field_name or cast(Any, owner).__qualname__)
+
+def from_kwargs(
+    target: type[T] | Callable[..., T],
+    values: Mapping[str, Any],
+    *,
+    strict: bool = False,
+) -> T | partial[T]:
+    """Filter keyword values, then construct a class or partially bind a callable."""
+
+    filtered = to_kwargs(target, values, strict=strict)
+    if inspect.isclass(target):
+        result = target(**filtered)
+    else:
+        result = partial(target, **filtered)
+    return result
 
 
 def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = None) -> T:
