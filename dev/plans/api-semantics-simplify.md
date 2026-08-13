@@ -3,7 +3,7 @@
 ## Status
 
 - Phase 1: Complete
-- Phase 2: Pending
+- Phase 2: Complete
 - Phase 3: Pending
 - Phase 4: Pending
 - Phase 5: Pending
@@ -645,7 +645,7 @@ type_check`, `./run.py lint_check`, `./run.py format_check`, and `git diff
 
 ## Phase 2: Decouple and simplify recursive relation conversion
 
-**Status:** Pending
+**Status:** Complete
 
 1. Move the current recursive owner and `kwargs_for` conversion out of
    `from_kwargs` and into the declaration-order `from_dict` path before
@@ -691,6 +691,12 @@ and Phase 3 can replace `from_kwargs` without breaking recursive conversion.
 tests/test_basic.py tests/test_pydantic.py -k 'relation or kwargs'`,
 `./run.py type_check`,
 `./run.py lint_check`, `./run.py format_check`, and `git diff --check`.
+
+**Validation result:** `uv run --group dev --extra pydantic pytest
+tests/test_basic.py tests/test_pydantic.py -k 'relation or kwargs'` passed with
+9 tests passed and 37 deselected. The same two test files passed all 46 tests.
+`./run.py type_check`, `./run.py lint_check`, `./run.py format_check`, and `git
+diff --check` passed.
 
 ## Phase 3: Implement the shallow kwargs contract
 

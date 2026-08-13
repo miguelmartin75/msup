@@ -172,6 +172,11 @@ def counted_relation_target(value: int, state: State = State.READY, values: list
     relation_target_calls += 1
 
 
+def serialization_failure_target(value: int, callback: Callable[[int], int]) -> None:
+    global relation_target_calls
+    relation_target_calls += 1
+
+
 def default_relation_target(value: int = 2, *, label: str = "default") -> None:
     pass
 
@@ -207,6 +212,39 @@ def direct_relation_values(
     kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")],
 ) -> None:
     pass
+
+
+direct_owner_calls = 0
+direct_selected_target_calls = 0
+direct_relation_default = {"label": "owner", "items": []}
+
+
+def direct_default_relation_target(
+    value: int,
+    label: str = "selected",
+    items: list[int] | None = None,
+    enabled: bool = False,
+) -> None:
+    global direct_selected_target_calls
+    direct_selected_target_calls += 1
+
+
+def direct_default_relation_owner(
+    target: Callable[..., Any] = direct_default_relation_target,
+    kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")] = direct_relation_default,
+) -> None:
+    global direct_owner_calls
+    direct_owner_calls += 1
+
+
+class DirectRelationMethodOwner:
+    def run(
+        self,
+        target: Callable[..., Any] = direct_default_relation_target,
+        kwargs: Annotated[dict[str, Any], Metadata(kwargs_for="target")] = direct_relation_default,
+    ) -> None:
+        global direct_owner_calls
+        direct_owner_calls += 1
 
 
 @dataclass
@@ -470,6 +508,45 @@ class BasicTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "direct_relation_values.kwargs: missing selector"):
             to_dict({"kwargs": {"value": 1}}, type_class=direct_relation_values)
 
+    def test_direct_function_kwargs_relations_resolve_defaults_without_invocation(self):
+        global direct_owner_calls, direct_selected_target_calls
+        direct_owner_calls = direct_selected_target_calls = 0
+        prepared = kwargs_from_dict(
+            direct_default_relation_owner,
+            {"kwargs": {"value": "3", "label": "supplied"}},
+            field_name="direct",
+        )
+
+        self.assertIs(prepared["target"], direct_default_relation_target)
+        self.assertEqual(prepared["kwargs"], {"value": 3, "label": "supplied", "items": []})
+        self.assertNotIn("enabled", prepared["kwargs"])
+        self.assertIsNot(prepared["kwargs"]["items"], direct_relation_default["items"])
+        prepared["kwargs"]["items"].append(4)
+        self.assertEqual(direct_relation_default, {"label": "owner", "items": []})
+        self.assertEqual((direct_owner_calls, direct_selected_target_calls), (0, 0))
+
+        with self.assertRaisesRegex(TypeError, "direct.unknown: unknown target parameter"):
+            kwargs_from_dict(direct_default_relation_owner, {"unknown": 1}, field_name="direct")
+        with self.assertRaisesRegex(TypeError, "direct.kwargs.value: missing required target parameter"):
+            kwargs_from_dict(direct_default_relation_owner, {}, field_name="direct")
+        self.assertEqual((direct_owner_calls, direct_selected_target_calls), (0, 0))
+
+    def test_unbound_method_kwargs_relations_retain_receiver_without_invocation(self):
+        global direct_owner_calls, direct_selected_target_calls
+        direct_owner_calls = direct_selected_target_calls = 0
+        receiver = DirectRelationMethodOwner()
+
+        prepared = kwargs_from_dict(
+            DirectRelationMethodOwner.run,
+            {"self": receiver, "kwargs": {"value": "5", "label": "method"}},
+            field_name="method",
+        )
+
+        self.assertIs(prepared["self"], receiver)
+        self.assertIs(prepared["target"], direct_default_relation_target)
+        self.assertEqual(prepared["kwargs"], {"value": 5, "label": "method", "items": []})
+        self.assertEqual((direct_owner_calls, direct_selected_target_calls), (0, 0))
+
     def test_nested_kwargs_errors_keep_the_containing_path(self):
         with self.assertRaisesRegex(TypeError, "StrictNestedRelationOwner.nested.kwargs.value: missing"):
             from_dict(StrictNestedRelationOwner, {"nested": {}})
@@ -495,6 +572,39 @@ class BasicTests(unittest.TestCase):
             to_dict(StructuredTargetRelationOwner(kwargs={"config": None})),
             {"target": f"{__name__}.selected_relation_config_target", "kwargs": {"config": None}},
         )
+
+    def test_selected_relation_serialization_errors_are_qualified_without_invocation(self):
+        global relation_target_calls
+        relation_target_calls = 0
+
+        def local_callback(value: int) -> int:
+            return value
+
+        cases = [
+            (
+                counted_relation_target,
+                {"value": 1, "state": "stopped"},
+                TypeError,
+                "RelationValues.kwargs.state: expected State value",
+            ),
+            (
+                serialization_failure_target,
+                {"value": "invalid", "callback": increment},
+                ValueError,
+                "RelationValues.kwargs.value: invalid literal",
+            ),
+            (
+                serialization_failure_target,
+                {"value": 1, "callback": local_callback},
+                TypeError,
+                "RelationValues.kwargs.callback:.*cannot be represented by an importable",
+            ),
+        ]
+        for target, kwargs, error_type, message in cases:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaisesRegex(error_type, message):
+                    to_dict(RelationValues(target, kwargs))
+        self.assertEqual(relation_target_calls, 0)
 
     def test_kwargs_relation_schemas_reject_invalid_links(self):
         with self.assertRaisesRegex(TypeError, "^an annotation can contain at most one CliArg or Metadata$"):

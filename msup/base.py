@@ -690,7 +690,45 @@ def selected_target_fields(target: type | Callable[..., Any]) -> list[FieldSpec]
             annotation = normalize_annotation(annotation)
         default = MISSING if parameter.default is inspect._empty else parameter.default
         result.append(FieldSpec(name, annotation, annotations, default, MISSING))
+
+    prior_fields: dict[str, FieldSpec] = {}
+    for field in result:
+        field_name = f"{target.__qualname__}.{field.name}"
+        metadata = metadata_from_annotations(field.annotations, field_name)
+        if metadata is not None and metadata.kwargs_for is not None:
+            relation_name = metadata.kwargs_for
+            relation_annotation = normalize_annotation(field.annotation)
+            if get_origin(relation_annotation) is not dict or get_args(relation_annotation) != (str, Any):
+                raise TypeError(f"{field_name}: kwargs_for fields must be annotated as dict[str, Any] or Kwargs")
+            selector = prior_fields.get(relation_name)
+            if selector is None:
+                raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} is not a preceding field")
+            if annotation_origin(selector.annotation) is not Callable2:
+                raise TypeError(f"{field_name}: kwargs_for selector {relation_name!r} must be annotated as Callable")
+            field.kwargs_relation = selector
+        prior_fields[field.name] = field
     return result
+
+
+def validate_selected_mapping(
+    parameters: list[FieldSpec],
+    values: Mapping[str, Any],
+    field_name: str,
+) -> None:
+    """Validate selected argument names and required parameters without rewriting values."""
+
+    if not isinstance(values, Mapping):
+        raise TypeError(f"{field_name}: expected a mapping, got {type(values)}")
+    parameter_names = {parameter.name for parameter in parameters}
+    unknown = next((name for name in values if name not in parameter_names), None)
+    if unknown is not None:
+        raise TypeError(f"{field_name}.{unknown}: unknown target parameter")
+    missing = next(
+        (parameter.name for parameter in parameters if parameter.name not in values and parameter.default is MISSING),
+        None,
+    )
+    if missing is not None:
+        raise TypeError(f"{field_name}.{missing}: missing required target parameter")
 
 
 def dict_from_str(x: str) -> dict[Any, Any]:
@@ -813,43 +851,61 @@ def from_dict_value(x: Any, field_type: Any, concrete_type: type, field_name: st
     return result
 
 
-def to_dict_value(x: Any, field_type: Any) -> Any:
-    """Recursively encode one Python value according to its annotation."""
+def to_dict_value(x: Any, field_type: Any, field_name: str = "value") -> Any:
+    """Recursively encode one Python value and qualify failures with its field path."""
 
-    origin = annotation_origin(field_type)
-    optional_type = get_optional_type(field_type)
-    if x is None:
-        return None
-    elif optional_type is not None:
-        return to_dict_value(x, optional_type)
-    elif origin in (Union, UnionType):
-        return to_dict_value(x, union_member(field_type, type(x)))
-    elif field_type is Any:
-        return x
-    elif (enum_class := enum_type(field_type)) is not None:
-        validate_enum_values(enum_class, "value")
-        if not isinstance(x, enum_class):
-            raise TypeError(f"expected {enum_class.__name__} value, got {type(x)}")
-        return x.value
-    elif is_structured_model(x):
-        return to_dict(x)
-    elif origin is dict:
-        key_type, value_type = get_collection_args(field_type)
-        return {to_dict_value(key, key_type): to_dict_value(value, value_type) for key, value in x.items()}
-    elif origin in (list, tuple):
-        item_types = get_collection_args(field_type, len(x))
-        values = [
-            to_dict_value(item, item_types[index] if index < len(item_types) else Any) for index, item in enumerate(x)
-        ]
-        return tuple(values) if isinstance(x, tuple) else values
-    elif origin is Callable2:
-        if not callable(x):
-            raise TypeError(f"expected callable value for {field_type}, got {type(x)}")
-        return dump_callable(x)
-    elif origin in (int, float, str, bool):
-        return origin(x)
-    else:
-        return x
+    try:
+        origin = annotation_origin(field_type)
+        optional_type = get_optional_type(field_type)
+        if x is None:
+            result = None
+        elif optional_type is not None:
+            result = to_dict_value(x, optional_type, field_name)
+        elif origin in (Union, UnionType):
+            result = to_dict_value(x, union_member(field_type, type(x), field_name), field_name)
+        elif field_type is Any:
+            result = x
+        elif (enum_class := enum_type(field_type)) is not None:
+            validate_enum_values(enum_class, field_name)
+            if not isinstance(x, enum_class):
+                raise TypeError(f"{field_name}: expected {enum_class.__name__} value, got {type(x)}")
+            result = x.value
+        elif is_structured_model(x):
+            result = to_dict(x, field_name=field_name)
+        elif origin is dict:
+            key_type, value_type = get_collection_args(field_type)
+            result = {
+                to_dict_value(key, key_type, f"{field_name}.key"): to_dict_value(
+                    value, value_type, f"{field_name}.value"
+                )
+                for key, value in x.items()
+            }
+        elif origin in (list, tuple):
+            item_types = get_collection_args(field_type, len(x))
+            values = [
+                to_dict_value(
+                    item,
+                    item_types[index] if index < len(item_types) else Any,
+                    f"{field_name}[{index}]",
+                )
+                for index, item in enumerate(x)
+            ]
+            result = tuple(values) if isinstance(x, tuple) else values
+        elif origin is Callable2:
+            if not callable(x):
+                raise TypeError(f"{field_name}: expected callable value for {field_type}, got {type(x)}")
+            result = dump_callable(x)
+        elif origin in (int, float, str, bool):
+            result = origin(x)
+        else:
+            result = x
+    except (TypeError, ValueError) as error:
+        message = str(error)
+        qualified_prefixes = (f"{field_name}:", f"{field_name}.", f"{field_name}[")
+        if message.startswith(qualified_prefixes):
+            raise
+        raise type(error)(f"{field_name}: {message}") from error
+    return result
 
 
 def to_dict(
@@ -861,7 +917,7 @@ def to_dict(
     mapping = x if isinstance(x, Mapping) else None
     owner = type(x) if type_class is None else type_class
     owner_name = field_name or cast(Any, owner).__qualname__
-    selected_fields = {}
+    selected_fields: dict[str, list[FieldSpec]] = {}
     for f in fields_or_init_kwargs(owner):
         value = mapping[f.name] if mapping is not None and f.name in mapping else getattr(x, f.name, MISSING)
         if value is MISSING:
@@ -870,7 +926,7 @@ def to_dict(
             if f.annotation is not Any and is_structured_model(value):
                 result[f.name] = to_dict(value, field_name=f"{owner_name}.{f.name}")
             else:
-                result[f.name] = to_dict_value(value, f.annotation or type(value))
+                result[f.name] = to_dict_value(value, f.annotation or type(value), f"{owner_name}.{f.name}")
         else:
             target = (
                 mapping.get(f.kwargs_relation.name, MISSING)
@@ -880,28 +936,20 @@ def to_dict(
             field_name = f"{owner_name}.{f.name}"
             if target is MISSING:
                 raise TypeError(f"{field_name}: missing selector {f.kwargs_relation.name!r}")
-            if not isinstance(value, Mapping):
-                raise TypeError(f"{field_name}: expected a mapping, got {type(value)}")
             parameters = selected_fields.get(f.kwargs_relation.name)
             if parameters is None:
                 parameters = selected_fields[f.kwargs_relation.name] = selected_target_fields(target)
-            names = {parameter.name for parameter in parameters}
-            unknown = next((name for name in value if name not in names), None)
-            if unknown is not None:
-                raise TypeError(f"{field_name}.{unknown}: unknown target parameter")
+            validate_selected_mapping(parameters, value, field_name)
             converted = {}
             for parameter in parameters:
                 if parameter.name in value:
                     raw = value[parameter.name]
                     annotation = parameter.annotation or type(raw)
-                    item = from_dict_value(raw, annotation, type(raw), f"{field_name}.{parameter.name}")
                     converted[parameter.name] = (
-                        to_dict(item, field_name=f"{field_name}.{parameter.name}")
-                        if is_structured_model(item)
-                        else to_dict_value(item, annotation)
+                        to_dict(raw, field_name=f"{field_name}.{parameter.name}")
+                        if is_structured_model(raw)
+                        else to_dict_value(raw, annotation, f"{field_name}.{parameter.name}")
                     )
-                elif parameter.default is MISSING:
-                    raise TypeError(f"{field_name}.{parameter.name}: missing required target parameter")
             result[f.name] = converted
     return result
 
@@ -929,20 +977,72 @@ def kwargs_from_dict(
     except TypeError as error:
         raise TypeError(f"{field_name}: {error}") from error
     if not isinstance(values, Mapping):
-        raise TypeError(f"{field_name}: expected a mapping, got {type(values)}")
-    parameter_names = {parameter.name for parameter in parameters}
-    unknown = next((name for name in values if name not in parameter_names), None)
-    if unknown is not None:
-        raise TypeError(f"{field_name}.{unknown}: unknown target parameter")
-    result = {}
+        validate_selected_mapping(parameters, values, field_name)
+    relation_names = {
+        parameter.kwargs_relation.name for parameter in parameters if parameter.kwargs_relation is not None
+    }
+    validation_values = dict(values)
     for parameter in parameters:
-        if parameter.name in values:
+        if parameter.kwargs_relation is not None or parameter.name in relation_names:
+            validation_values.setdefault(parameter.name, MISSING)
+    validate_selected_mapping(parameters, validation_values, field_name)
+    result: dict[str, Any] = {}
+    selectors: dict[str, tuple[Any, list[FieldSpec]]] = {}
+    for parameter in parameters:
+        current_field_name = f"{field_name}.{parameter.name}"
+        value = values.get(parameter.name, MISSING)
+        if parameter.kwargs_relation is not None:
+            supplied = {} if value is MISSING else value
+            if not isinstance(supplied, Mapping):
+                raise TypeError(f"{current_field_name}: expected a mapping, got {type(supplied)}")
+            relation = parameter.kwargs_relation
+            if relation.name not in selectors:
+                selected_target = values.get(relation.name, MISSING)
+                if selected_target is MISSING:
+                    if relation.default is MISSING:
+                        raise TypeError(f"{field_name}.{relation.name}: missing selector")
+                    selected_target = deepcopy(relation.default)
+                selected_target = from_dict_value(
+                    selected_target,
+                    relation.annotation,
+                    type(selected_target),
+                    f"{field_name}.{relation.name}",
+                )
+                try:
+                    selected_parameters = selected_target_fields(selected_target)
+                except TypeError as error:
+                    raise TypeError(f"{current_field_name}: {error}") from error
+                selectors[relation.name] = selected_target, selected_parameters
+                result[relation.name] = selected_target
+            _, selected_parameters = selectors[relation.name]
+            if any(selected_parameter.name not in supplied for selected_parameter in selected_parameters):
+                default = deepcopy(parameter.default) if parameter.default is not MISSING else {}
+            else:
+                default = {}
+            if not isinstance(default, Mapping):
+                raise TypeError(f"{current_field_name}: expected a mapping default, got {type(default)}")
+            merged = {**default, **supplied}
+            validate_selected_mapping(selected_parameters, merged, current_field_name)
+            converted = {}
+            for selected_parameter in selected_parameters:
+                if selected_parameter.name in merged:
+                    selected_value = merged[selected_parameter.name]
+                    converted[selected_parameter.name] = from_dict_value(
+                        selected_value,
+                        selected_parameter.annotation if selected_parameter.annotation is not None else Any,
+                        type(selected_value),
+                        f"{current_field_name}.{selected_parameter.name}",
+                    )
+            result[parameter.name] = converted
+        elif value is not MISSING:
             value = values[parameter.name]
             result[parameter.name] = from_dict_value(
-                value, parameter.annotation or type(value), type(value), f"{field_name}.{parameter.name}"
+                value,
+                parameter.annotation if parameter.annotation is not None else Any,
+                type(value),
+                current_field_name,
             )
-        elif parameter.default is MISSING:
-            raise TypeError(f"{field_name}.{parameter.name}: missing required target parameter")
+    validate_selected_mapping(parameters, {**values, **result}, field_name)
     return result
 
 
@@ -952,83 +1052,9 @@ def from_kwargs(
     *,
     field_name: str | None = None,
 ) -> dict[str, Any]:
-    """Converts an owner's linked fields without invoking a function owner."""
+    """Temporarily delegate recursive callable argument decoding without invocation."""
 
-    owner_name = field_name or cast(Any, owner).__qualname__
-    if not isinstance(values, Mapping):
-        raise TypeError(f"{owner_name}: expected a mapping, got {type(values)}")
-    field_info = fields_or_init_kwargs(owner)
-    pydantic_owner = is_pydantic_model(owner)
-    result: dict[str, Any] = deepcopy(dict(values)) if pydantic_owner else {}
-    selectors: dict[str, tuple[Any, list[FieldSpec]]] = {}
-    for f in field_info:
-        current_field_name = f"{owner_name}.{f.name}"
-        value = values.get(f.name, MISSING)
-        if f.kwargs_relation is not None:
-            supplied = {} if value is MISSING else value
-            if not isinstance(supplied, Mapping):
-                raise TypeError(f"{current_field_name}: expected a mapping, got {type(supplied)}")
-            relation = f.kwargs_relation
-            if relation.name not in selectors:
-                target = values.get(relation.name, MISSING)
-                if target is MISSING:
-                    if relation.default is not MISSING:
-                        target = deepcopy(relation.default)
-                    elif relation.default_factory is not MISSING:
-                        target = relation.default_factory()
-                    else:
-                        raise TypeError(f"{owner_name}.{relation.name}: missing selector")
-                target = from_dict_value(target, relation.annotation, type(target), f"{owner_name}.{relation.name}")
-                try:
-                    parameters = selected_target_fields(target)
-                except TypeError as error:
-                    raise TypeError(f"{current_field_name}: {error}") from error
-                selectors[relation.name] = target, parameters
-                result[relation.name] = target
-            _, parameters = selectors[relation.name]
-            if any(parameter.name not in supplied for parameter in parameters):
-                if f.default is not MISSING:
-                    default = deepcopy(f.default)
-                else:
-                    default = f.default_factory() if f.default_factory is not MISSING else {}
-            else:
-                default = {}
-            if not isinstance(default, Mapping):
-                raise TypeError(f"{current_field_name}: expected a mapping default, got {type(default)}")
-            merged = {**default, **supplied}
-            parameter_names = {parameter.name for parameter in parameters}
-            unknown = next((name for name in merged if name not in parameter_names), None)
-            if unknown is not None:
-                raise TypeError(f"{current_field_name}.{unknown}: unknown target parameter")
-            converted = {}
-            for parameter in parameters:
-                if parameter.name in merged:
-                    parameter_value = merged[parameter.name]
-                    converted[parameter.name] = from_dict_value(
-                        parameter_value,
-                        parameter.annotation or type(parameter_value),
-                        type(parameter_value),
-                        f"{current_field_name}.{parameter.name}",
-                    )
-                elif parameter.default is MISSING:
-                    raise TypeError(f"{current_field_name}.{parameter.name}: missing required target parameter")
-        elif value is not MISSING:
-            field_type = get_optional_type(f.annotation) or normalize_annotation(f.annotation) or type(value)
-            if inspect.isclass(field_type) and contains_relation(field_type):
-                if isinstance(value, field_type):
-                    converted = value
-                else:
-                    raw = dict_from_str(value) if isinstance(value, str) else value
-                    converted = from_dict(field_type, cast(dict[Any, Any], raw), field_name=current_field_name)
-            elif not pydantic_owner:
-                converted = from_dict_value(value, f.annotation or field_type, type(value), current_field_name)
-            else:
-                continue
-        else:
-            continue
-
-        result[f.name] = converted
-    return result
+    return kwargs_from_dict(owner, values, field_name=field_name or cast(Any, owner).__qualname__)
 
 
 def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = None) -> T:
@@ -1036,8 +1062,74 @@ def from_dict(clazz: type[T], x: dict[Any, Any], *, field_name: str | None = Non
 
     owner_name = field_name or clazz.__qualname__
     if contains_relation(clazz):
-        values = cast(Any, from_kwargs)(clazz, x, field_name=owner_name)
-        if is_pydantic_model(clazz):
+        if not isinstance(x, Mapping):
+            raise TypeError(f"{owner_name}: expected a mapping, got {type(x)}")
+        field_info = fields_or_init_kwargs(clazz)
+        pydantic_owner = is_pydantic_model(clazz)
+        values: dict[str, Any] = deepcopy(dict(x)) if pydantic_owner else {}
+        selectors: dict[str, tuple[Any, list[FieldSpec]]] = {}
+        for f in field_info:
+            current_field_name = f"{owner_name}.{f.name}"
+            value = x.get(f.name, MISSING)
+            if f.kwargs_relation is not None:
+                supplied = {} if value is MISSING else value
+                if not isinstance(supplied, Mapping):
+                    raise TypeError(f"{current_field_name}: expected a mapping, got {type(supplied)}")
+                relation = f.kwargs_relation
+                if relation.name not in selectors:
+                    target = x.get(relation.name, MISSING)
+                    if target is MISSING:
+                        if relation.default is not MISSING:
+                            target = deepcopy(relation.default)
+                        elif relation.default_factory is not MISSING:
+                            target = relation.default_factory()
+                        else:
+                            raise TypeError(f"{owner_name}.{relation.name}: missing selector")
+                    target = from_dict_value(target, relation.annotation, type(target), f"{owner_name}.{relation.name}")
+                    try:
+                        parameters = selected_target_fields(target)
+                    except TypeError as error:
+                        raise TypeError(f"{current_field_name}: {error}") from error
+                    selectors[relation.name] = target, parameters
+                    values[relation.name] = target
+                _, parameters = selectors[relation.name]
+                if any(parameter.name not in supplied for parameter in parameters):
+                    if f.default is not MISSING:
+                        default = deepcopy(f.default)
+                    else:
+                        default = f.default_factory() if f.default_factory is not MISSING else {}
+                else:
+                    default = {}
+                if not isinstance(default, Mapping):
+                    raise TypeError(f"{current_field_name}: expected a mapping default, got {type(default)}")
+                merged = {**default, **supplied}
+                validate_selected_mapping(parameters, merged, current_field_name)
+                converted = {}
+                for parameter in parameters:
+                    if parameter.name in merged:
+                        parameter_value = merged[parameter.name]
+                        converted[parameter.name] = from_dict_value(
+                            parameter_value,
+                            parameter.annotation or type(parameter_value),
+                            type(parameter_value),
+                            f"{current_field_name}.{parameter.name}",
+                        )
+            elif value is not MISSING:
+                field_type = get_optional_type(f.annotation) or normalize_annotation(f.annotation) or type(value)
+                if inspect.isclass(field_type) and contains_relation(field_type):
+                    if isinstance(value, field_type):
+                        converted = value
+                    else:
+                        raw = dict_from_str(value) if isinstance(value, str) else value
+                        converted = from_dict(field_type, cast(dict[Any, Any], raw), field_name=current_field_name)
+                elif not pydantic_owner:
+                    converted = from_dict_value(value, f.annotation or field_type, type(value), current_field_name)
+                else:
+                    continue
+            else:
+                continue
+            values[f.name] = converted
+        if pydantic_owner:
             result = cast(Any, clazz).model_validate(values)
         else:
             result = clazz(**values)
