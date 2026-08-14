@@ -25,19 +25,26 @@ from typing import (
 
 T = TypeVar("T")
 type Kwargs = dict[str, Any]
-"""Keyword arguments whose effective schema comes from a selected callable."""
+"""Keyword arguments described by a callable named in a related selector field."""
 
 
 # fmt: off
 def is_annotation_supported(annotation: Any, *, operation: Literal["type_check", "dict", "json"]) -> bool:
-    """Return full annotation support for recursive runtime value checking (type_check),
-    bidirectional dictionary conversion (dict), or canonical JSON conversion (json).
+    """Return whether msup fully handles an annotation under the requested rules.
+
+    ``type_check`` checks Python values without changing them. ``dict`` checks
+    reading and writing dictionary-form values. ``json`` checks whether every
+    value allowed by the annotation has one canonical JSON form that can be read
+    back without loss. It is narrower than ``dict``: dictionary keys must be
+    strings, and ``Any`` is not supported. The operation chooses these support
+    rules; it does not request encoding or decoding. An unknown operation raises
+    ``ValueError``.
     """
     ...
 
 
 def is_value_of_type(value: Any, annotation: Any) -> bool:
-    """Return whether a Python value recursively matches an annotation without conversion."""
+    """Return whether a Python value and all nested values fit an annotation without conversion."""
     ...
 
 
@@ -48,7 +55,14 @@ def to_dict(
     strict: bool = False,
     field_name: str | None = None,
 ) -> dict[str, Any]:
-    """Recursively encode declared fields into dictionary-form values."""
+    """Convert present declared fields and nested values into a dictionary.
+
+    By default, supported type conversions are applied and an unsupported value
+    may pass through only when it already fits its full annotation.
+    ``strict=True`` rejects unsupported annotations and values that do not
+    already have the declared Python types. The function never fills missing
+    fields.
+    """
     ...
 
 
@@ -59,7 +73,14 @@ def from_dict(
     strict: bool = False,
     field_name: str | None = None,
 ) -> T:
-    """Recursively decode dictionary-form values and construct a class instance."""
+    """Decode a mapping's nested values and construct one class instance.
+
+    By default, supported type conversions are applied and an unsupported value
+    may pass through only when it already fits its full annotation.
+    ``strict=True`` rejects unsupported annotations and input values in the
+    wrong encoded type. Missing constructor arguments remain the class's
+    responsibility.
+    """
     ...
 
 
@@ -71,7 +92,13 @@ def to_json(
     type_class: type | Callable[..., Any] | None = None,
     strict: bool = False,
 ) -> str | None:
-    """Encode a value as JSON text or write it to a JSON destination."""
+    """Convert a value to JSON text, or write it and return ``None``.
+
+    By default, supported type conversions are applied before JSON writing.
+    ``strict=True`` rejects unsupported annotations and Python values that do
+    not already match them. ``file_like`` may be an open destination or a JSON
+    file path.
+    """
     ...
 
 
@@ -83,7 +110,12 @@ def from_json(
     *,
     strict: bool = False,
 ) -> T:
-    """Read JSON input, recursively decode it, and construct a class instance."""
+    """Read JSON, decode its nested values, and construct one class instance.
+
+    Input may come from ``s``, ``file_like``, or ``path``. By default, supported
+    type conversions are applied. ``strict=True`` rejects unsupported
+    annotations and input values in the wrong encoded type.
+    """
     ...
 
 
@@ -93,13 +125,21 @@ def to_kwargs(
     *,
     strict: bool = False,
 ) -> dict[str, Any]:
-    """Select a target's present top-level keyword-bindable values without conversion."""
+    """Copy present top-level values that ``target`` accepts by keyword.
+
+    Nested values are not converted or copied, and missing values and defaults
+    are not filled. ``strict=True`` checks each copied value against its
+    annotation.
+    """
     ...
 
 
 @overload
 def from_kwargs(target: type[T], values: Mapping[str, Any], *, strict: bool = False) -> T:
-    """Filter keyword values and construct a class exactly once."""
+    """Filter keyword values and construct ``target`` exactly once.
+
+    ``strict=True`` checks copied values without converting them.
+    """
     ...
 
 
@@ -110,7 +150,11 @@ def from_kwargs(
     *,
     strict: bool = False,
 ) -> partial[T]:
-    """Filter keyword values and return a partial without invoking the callable."""
+    """Filter keyword values and return a partial without calling ``target``.
+
+    ``strict=True`` checks copied values without converting them. Missing
+    required arguments and callable defaults remain open for the later call.
+    """
     ...
 
 
@@ -120,7 +164,11 @@ def from_kwargs(
     *,
     strict: bool = False,
 ) -> T | partial[T]:
-    """Filter keyword values, then construct a class or partially bind a callable."""
+    """Construct a class once or return a partial without calling a callable.
+
+    Only present top-level keyword values are used. ``strict=True`` checks them
+    without converting them.
+    """
     ...
 
 
@@ -131,27 +179,38 @@ def kwargs_from_dict(
     strict: bool = False,
     field_name: str = "kwargs",
 ) -> dict[str, Any]:
-    """Recursively decode callable arguments without invoking or constructing the target."""
+    """Decode a callable's nested argument values without running the target.
+
+    Unknown and missing required arguments are rejected. ``strict=True``
+    rejects unsupported annotations and input values in the wrong encoded type.
+    A class is not constructed and a function or method is not called.
+    """
     ...
 
 
 def load_callable(name: str) -> Any:
-    """Load a trusted callable from its canonical module-qualified reference."""
+    """Load a trusted callable from its fully qualified import name.
+
+    Only use names from a trusted source because importing can run code.
+    """
     ...
 
 
 def dump_callable(value: Any) -> str:
-    """Return a canonical reference that reloads to the identical callable."""
+    """Return the canonical module-qualified name for the same callable.
+
+    A value that cannot be imported by that name raises ``TypeError``.
+    """
     ...
 
 
 def str_to_bool(value: str) -> bool:
-    """Convert a supported textual boolean spelling or raise TypeError."""
+    """Convert a supported true or false spelling, or raise ``TypeError``."""
     ...
 
 
 def dict_from_str(value: str) -> dict[Any, Any]:
-    """Load a dictionary from inline JSON text or a JSON file path."""
+    """Read a dictionary from inline JSON or a path ending in ``.json``."""
     ...
 # fmt: on
 
@@ -175,14 +234,18 @@ else:
 
 @dataclass(frozen=True, kw_only=True)
 class Metadata:
-    """Field metadata, including an optional relation to a callable selector."""
+    """Extra field settings, including an optional link to a callable selector."""
 
     kwargs_for: str | None = None
 
 
 @dataclass
 class FieldSpec:
-    """A reflected field whose kwargs_relation links only to its preceding selector."""
+    """Description of a field or parameter found by inspecting its owner.
+
+    When the field uses ``kwargs_for``, ``kwargs_relation`` points to the
+    earlier field that selects the callable.
+    """
 
     name: str
     annotation: Any
@@ -194,14 +257,21 @@ class FieldSpec:
 
 @dataclass(frozen=True)
 class ConversionAttempt:
-    """Hold a converted value or the error that prevented conversion."""
+    """Result of trying a conversion without raising a conversion error.
+
+    ``error`` is ``None`` on success. When it is set, ``value`` must not be
+    used.
+    """
 
     value: Any = None
     error: Exception | None = None
 
 
 def unwrap_annotated(annotation: Any) -> tuple[Any, list[Any]]:
-    """Separate an Annotated base type from its ordered metadata values."""
+    """Return an ``Annotated`` value's base type and ordered metadata.
+
+    Other annotations are returned unchanged with an empty metadata list.
+    """
 
     if get_origin(annotation) is Annotated:
         annotation, *annotations = get_args(annotation)
@@ -211,14 +281,17 @@ def unwrap_annotated(annotation: Any) -> tuple[Any, list[Any]]:
 
 
 def normalize_annotation(annotation: Any) -> Any:
-    """Remove Annotated metadata and unwrap one runtime type alias."""
+    """Remove ``Annotated`` metadata and unwrap one runtime type alias."""
 
     annotation, _ = unwrap_annotated(annotation)
     return annotation.__value__ if isinstance(annotation, TypeAliasType) else annotation
 
 
 def metadata_from_annotations(annotations: list[Any], field_name: str = "") -> Metadata | None:
-    """Return the sole Metadata annotation and reject duplicates."""
+    """Return the only ``Metadata`` item, or ``None`` when there is no item.
+
+    More than one item raises ``TypeError``.
+    """
 
     metadata = [value for value in annotations if isinstance(value, Metadata)]
     if len(metadata) > 1:
@@ -229,7 +302,10 @@ def metadata_from_annotations(annotations: list[Any], field_name: str = "") -> M
 
 
 def is_pydantic_model(candidate: type | object) -> bool:
-    """Return whether a candidate is a supported Pydantic v2 model or instance."""
+    """Return whether a class or instance is a supported Pydantic v2 model.
+
+    A Pydantic v1 model raises ``TypeError``.
+    """
 
     clazz = candidate if inspect.isclass(candidate) else type(candidate)
     if PydanticBaseModel is None:
@@ -244,7 +320,10 @@ def is_pydantic_model(candidate: type | object) -> bool:
 
 
 def is_structured_model(candidate: type | object) -> bool:
-    """Return whether a candidate is a dataclass or supported Pydantic model."""
+    """Return whether a class or instance is a dataclass or Pydantic v2 model.
+
+    A Pydantic v1 model raises ``TypeError``.
+    """
 
     return is_dataclass(candidate) or is_pydantic_model(candidate)
 
@@ -257,7 +336,12 @@ def from_json(
     *,
     strict: bool = False,
 ) -> T:
-    """Read JSON input, recursively decode it, and construct a class instance."""
+    """Read JSON, decode its nested values, and construct one class instance.
+
+    Input may come from ``s``, ``file_like``, or ``path``. By default, supported
+    type conversions are applied. ``strict=True`` rejects unsupported
+    annotations and input values in the wrong encoded type.
+    """
 
     if path:
         assert os.path.exists(path), f"{path} does not exist"
@@ -279,7 +363,13 @@ def to_json(
     type_class: type | Callable[..., Any] | None = None,
     strict: bool = False,
 ) -> str | None:
-    """Encode a value as JSON text or write it to a JSON destination."""
+    """Convert a value to JSON text, or write it and return ``None``.
+
+    By default, supported type conversions are applied before JSON writing.
+    ``strict=True`` rejects unsupported annotations and Python values that do
+    not already match them. ``file_like`` may be an open destination or a JSON
+    file path.
+    """
 
     value = to_dict_operation(x, type_class, strict=strict, operation="json")
     if file_like:
@@ -299,13 +389,13 @@ def to_json(
 
 
 def has_default_value(f: FieldSpec) -> bool:
-    """Return whether a reflected field declares a value or factory default."""
+    """Return whether a field has a fixed default or a default factory."""
 
     return f.default is not MISSING or f.default_factory is not MISSING
 
 
 def materialize_default(f: FieldSpec, fallback: Any = MISSING) -> Any:
-    """Copy a value default, invoke a factory once, or return the fallback."""
+    """Copy a fixed default, call a default factory once, or return ``fallback``."""
 
     if f.default is not MISSING:
         result = deepcopy(f.default)
@@ -317,7 +407,12 @@ def materialize_default(f: FieldSpec, fallback: Any = MISSING) -> Any:
 
 
 def fields_or_init_kwargs(target: type | Callable[..., Any], *, selected: bool = False) -> list[FieldSpec]:
-    """Reflect declared model fields or explicit callable parameters and relations."""
+    """Inspect a model's fields or a callable's named parameters.
+
+    The result includes defaults, annotations, and ``kwargs_for`` links. With
+    ``selected=True``, parameters that cannot be passed by keyword are rejected.
+    The target is never constructed or called.
+    """
 
     is_function_or_method = inspect.isfunction(target) or inspect.ismethod(target)
     assert inspect.isclass(target) or is_function_or_method, f"{target} is not a class, function, or method"
@@ -394,19 +489,25 @@ def fields_or_init_kwargs(target: type | Callable[..., Any], *, selected: bool =
 
 
 def contains_relation(owner: type | Callable[..., Any]) -> bool:
-    """Return whether a reflected owner has a field linked to a selector."""
+    """Return whether an inspected field uses ``kwargs_for``."""
 
     return any(field.kwargs_relation is not None for field in fields_or_init_kwargs(owner))
 
 
 def load_callable(name: str) -> Any:
-    """Load a trusted callable from its canonical module-qualified reference."""
+    """Load a trusted callable from its fully qualified import name.
+
+    Only use names from a trusted source because importing can run code.
+    """
 
     return pkgutil.resolve_name(name)
 
 
 def dump_callable(value: Any) -> str:
-    """Return a canonical reference that reloads to the identical callable."""
+    """Return the canonical module-qualified name for the same callable.
+
+    A value that cannot be imported by that name raises ``TypeError``.
+    """
 
     if not (inspect.isclass(value) or inspect.isfunction(value) or inspect.ismethod(value)):
         raise TypeError(f"expected an importable class, function, or method, got {type(value)}")
@@ -421,7 +522,7 @@ def dump_callable(value: Any) -> str:
 
 
 def str_to_bool(value: str) -> bool:
-    """Convert a supported textual boolean spelling or raise TypeError."""
+    """Convert a supported true or false spelling, or raise ``TypeError``."""
 
     normalized = value.lower()
     if normalized in ("y", "yes", "on", "1", "true", "t"):
@@ -434,13 +535,13 @@ def str_to_bool(value: str) -> bool:
 
 
 def maybe_idx(xs: tuple[Any, ...] | list[Any], idx: int, default: Any = None) -> Any:
-    """Return an indexed item or a default when the index is past the end."""
+    """Return an item by index, or ``default`` when the index is past the end."""
 
     return xs[idx] if idx < len(xs) else default
 
 
 def get_optional_type(annotation: Any) -> Any | None:
-    """Return the non-None member of an optional annotation, if present."""
+    """Return the non-``None`` type from an optional annotation, if present."""
 
     annotation, _ = unwrap_annotated(annotation)
     args = get_args(annotation)
@@ -452,7 +553,10 @@ def get_optional_type(annotation: Any) -> Any | None:
 
 
 def get_collection_args(annotation: Any, count: int = 0) -> tuple[Any, ...]:
-    """Return normalized key or item annotations for a supported collection."""
+    """Return the key or item types declared by a supported collection.
+
+    ``count`` repeats the item type for a plain or variable-length collection.
+    """
 
     annotation, _ = unwrap_annotated(annotation)
     origin = annotation_origin(annotation)
@@ -475,20 +579,23 @@ def get_collection_args(annotation: Any, count: int = 0) -> tuple[Any, ...]:
 
 
 def is_optional(annotation: Any) -> bool:
-    """Return whether an annotation is a two-member union with None."""
+    """Return whether an annotation is a two-type union containing ``None``."""
 
     return get_optional_type(annotation) is not None
 
 
 def annotation_origin(annotation: Any) -> Any:
-    """Return an annotation's runtime origin after removing Annotated metadata."""
+    """Return the runtime type behind an annotation after removing metadata."""
 
     annotation, _ = unwrap_annotated(annotation)
     return get_origin(annotation) or annotation
 
 
 def effective_type(annotation: Any, field_name: str) -> Any:
-    """Return a CLI annotation with optionality removed and reject other unions."""
+    """Remove ``None`` from an optional CLI type.
+
+    Other union types raise ``TypeError`` because the CLI cannot choose one.
+    """
 
     annotation, _ = unwrap_annotated(annotation)
     optional_type = get_optional_type(annotation)
@@ -502,7 +609,11 @@ def effective_type(annotation: Any, field_name: str) -> Any:
 
 
 def attempt_union_member(annotation: Any, concrete_type: type, field_name: str = "value") -> ConversionAttempt:
-    """Return a coercive union member or an error when selection is not unique."""
+    """Try to choose one union type that can read ``concrete_type``.
+
+    The returned attempt contains an error when no type matches or the choice is
+    ambiguous.
+    """
 
     candidates = []
     concrete_origin = annotation_origin(concrete_type)
@@ -558,7 +669,10 @@ def attempt_union_member(annotation: Any, concrete_type: type, field_name: str =
 
 
 def union_member(annotation: Any, concrete_type: type, field_name: str = "value") -> Any:
-    """Select the single best union member for a coercive source type."""
+    """Choose one union type that can read ``concrete_type``.
+
+    Raise ``TypeError`` when no type matches or the choice is ambiguous.
+    """
 
     attempt = attempt_union_member(annotation, concrete_type, field_name)
     if attempt.error is not None:
@@ -567,7 +681,7 @@ def union_member(annotation: Any, concrete_type: type, field_name: str = "value"
 
 
 def enum_type(annotation: Any) -> type[Enum] | None:
-    """Return the Enum subclass represented by an annotation, if any."""
+    """Return the ``Enum`` class named by an annotation, if there is one."""
 
     origin = annotation_origin(annotation)
     if inspect.isclass(origin) and issubclass(origin, Enum):
@@ -578,7 +692,7 @@ def enum_type(annotation: Any) -> type[Enum] | None:
 
 
 def validate_enum_values(enum_type: type[Enum], field_name: str) -> None:
-    """Reject enums whose values cannot use msup's scalar representation."""
+    """Reject an enum unless every value has exact type ``str``, ``int``, ``float``, or ``bool``."""
 
     supported_types = (str, int, float, bool)
     if any(type(member.value) not in supported_types for member in enum_type):
@@ -590,8 +704,15 @@ def is_annotation_supported(
     *,
     operation: Literal["type_check", "dict", "json"],
 ) -> bool:
-    """Return full annotation support for recursive runtime value checking (type_check),
-    bidirectional dictionary conversion (dict), or canonical JSON conversion (json).
+    """Return whether msup fully handles an annotation under the requested rules.
+
+    ``type_check`` checks Python values without changing them. ``dict`` checks
+    reading and writing dictionary-form values. ``json`` checks whether every
+    value allowed by the annotation has one canonical JSON form that can be read
+    back without loss. It is narrower than ``dict``: dictionary keys must be
+    strings, and ``Any`` is not supported. The operation chooses these support
+    rules; it does not request encoding or decoding. An unknown operation raises
+    ``ValueError``.
     """
 
     if operation not in ("type_check", "dict", "json"):
@@ -649,7 +770,7 @@ def is_annotation_supported(
 
 
 def is_value_of_type(value: Any, annotation: Any) -> bool:
-    """Return whether a Python value recursively matches an annotation without conversion."""
+    """Return whether a Python value and all nested values fit an annotation without conversion."""
 
     annotation = normalize_annotation(annotation)
     if not is_annotation_supported(annotation, operation="type_check"):
@@ -698,7 +819,11 @@ def is_value_of_type(value: Any, annotation: Any) -> bool:
 
 
 def selected_target_fields(target: type | Callable[..., Any]) -> list[FieldSpec]:
-    """Reflect a selected target's explicit keyword-capable signature without invoking it."""
+    """Inspect the named parameters of a selected class, function, or method.
+
+    Parameters that cannot be passed by keyword are rejected. The target is
+    never constructed or called.
+    """
 
     if not (inspect.isclass(target) or inspect.isfunction(target) or inspect.ismethod(target)):
         raise TypeError(f"{target}: selected targets must be classes, functions, or methods")
@@ -711,7 +836,10 @@ def validate_selected_mapping(
     values: Mapping[str, Any],
     field_name: str,
 ) -> None:
-    """Validate selected argument names and required parameters without rewriting values."""
+    """Check a selected argument mapping without changing its values.
+
+    Unknown names and missing required parameters raise ``TypeError``.
+    """
 
     if not isinstance(values, Mapping):
         raise TypeError(f"{field_name}: expected a mapping, got {type(values)}")
@@ -728,7 +856,7 @@ def validate_selected_mapping(
 
 
 def dict_from_str(value: str) -> dict[Any, Any]:
-    """Load a dictionary from inline JSON text or a JSON file path."""
+    """Read a dictionary from inline JSON or a path ending in ``.json``."""
 
     assert isinstance(value, str)
     if value.startswith("{"):
@@ -750,7 +878,16 @@ def attempt_from_dict_value(
     strict: bool = False,
     operation: Literal["dict", "json"] = "dict",
 ) -> ConversionAttempt:
-    """Return a decoded value or the error that prevented conversion."""
+    """Try to decode one value and return the result or its conversion error.
+
+    ``operation="dict"`` checks the rules for dictionary conversion.
+    ``operation="json"`` checks the narrower rules for JSON conversion. The
+    operation changes only those support rules; this function always decodes.
+    With ``strict=True``, the annotation must be fully supported and the input
+    must already use an accepted dictionary or JSON form. The default mode keeps
+    the built-in type conversions and otherwise accepts only a value that already
+    matches the full annotation.
+    """
 
     field_type = normalize_annotation(field_type)
     origin = annotation_origin(field_type)
@@ -941,13 +1078,15 @@ def from_dict_value(
     strict: bool = False,
     operation: Literal["dict", "json"] = "dict",
 ) -> Any:
-    """Decode one encoded value according to its annotation.
+    """Decode one value according to its annotation.
 
-    The operation selects capability provenance, not direction: dict applies
-    dictionary capability and json applies canonical JSON capability. Strict
-    decoding requires full selected capability and exact, non-coercive encoded
-    input; permissive decoding keeps supported coercions and allows identity
-    fallback only for recursively type-correct Python values.
+    ``operation="dict"`` checks the rules for dictionary conversion.
+    ``operation="json"`` checks the narrower rules for JSON conversion. The
+    operation changes only those support rules; this function always decodes.
+    With ``strict=True``, the annotation must be fully supported and the input
+    must already use an accepted dictionary or JSON form. The default mode keeps
+    the built-in type conversions and otherwise accepts only a value that already
+    matches the full annotation. A failed conversion raises the conversion error.
     """
 
     attempt = attempt_from_dict_value(x, field_type, field_name, strict=strict, operation=operation)
@@ -966,11 +1105,13 @@ def to_dict_value(
 ) -> Any:
     """Encode one Python value according to its annotation.
 
-    The operation selects capability provenance, not direction: dict applies
-    dictionary capability and json applies canonical JSON capability. Strict
-    encoding requires full selected capability and exact, non-coercive Python
-    input; permissive encoding keeps supported coercions and allows identity
-    fallback only for recursively type-correct Python values.
+    ``operation="dict"`` checks the rules for dictionary conversion.
+    ``operation="json"`` checks the narrower rules for JSON conversion. The
+    operation changes only those support rules; this function always encodes.
+    With ``strict=True``, the annotation must be fully supported and the value
+    must already match its Python type. The default mode keeps the built-in type
+    conversions and otherwise passes through only a value that matches the full
+    annotation.
     """
 
     field_type = normalize_annotation(field_type)
@@ -1043,13 +1184,17 @@ def to_dict_operation(
     field_name: str | None = None,
     operation: Literal["dict", "json"] = "dict",
 ) -> dict[str, Any]:
-    """Encode one owner's declared Python fields into mapping values.
+    """Encode an object's present declared fields and their nested values.
 
-    The operation selects capability provenance, not direction: dict applies
-    dictionary capability and json applies canonical JSON capability. Strict
-    encoding requires full selected capability and exact, non-coercive Python
-    field values; permissive encoding keeps supported coercions and allows
-    identity fallback only for recursively type-correct Python values.
+    ``operation="dict"`` checks the rules for dictionary conversion.
+    ``operation="json"`` checks the narrower rules for JSON conversion. The
+    operation changes only those support rules; this function always encodes.
+    With ``strict=True``, every present annotation must be fully supported and
+    each value must already match its Python type. The default mode keeps the
+    built-in type conversions and otherwise passes through only values that
+    match their full annotations. Missing fields are not filled. Selected
+    callables used by ``kwargs_for`` are inspected but never constructed or
+    called.
     """
 
     result: dict[str, Any] = {}
@@ -1112,7 +1257,14 @@ def to_dict(
     strict: bool = False,
     field_name: str | None = None,
 ) -> dict[str, Any]:
-    """Recursively encode declared fields into dictionary-form values."""
+    """Convert present declared fields and nested values into a dictionary.
+
+    By default, supported type conversions are applied and an unsupported value
+    may pass through only when it already fits its full annotation.
+    ``strict=True`` rejects unsupported annotations and values that do not
+    already have the declared Python types. The function never fills missing
+    fields.
+    """
 
     return to_dict_operation(x, type_class, strict=strict, field_name=field_name, operation="dict")
 
@@ -1123,7 +1275,12 @@ def to_kwargs(
     *,
     strict: bool = False,
 ) -> dict[str, Any]:
-    """Select a target's present top-level keyword-bindable values without conversion."""
+    """Copy present top-level values that ``target`` accepts by keyword.
+
+    Nested values are not converted or copied, and missing values and defaults
+    are not filled. ``strict=True`` checks each copied value against its
+    annotation.
+    """
 
     result: dict[str, Any] = {}
     missing = object()
@@ -1164,7 +1321,12 @@ def kwargs_from_dict(
     strict: bool = False,
     field_name: str = "kwargs",
 ) -> dict[str, Any]:
-    """Recursively decode callable arguments without invoking or constructing the target."""
+    """Decode a callable's nested argument values without running the target.
+
+    Unknown and missing required arguments are rejected. ``strict=True``
+    rejects unsupported annotations and input values in the wrong encoded type.
+    A class is not constructed and a function or method is not called.
+    """
 
     return from_dict_operation(
         target,
@@ -1178,7 +1340,10 @@ def kwargs_from_dict(
 
 @overload
 def from_kwargs(target: type[T], values: Mapping[str, Any], *, strict: bool = False) -> T:
-    """Filter keyword values and construct a class exactly once."""
+    """Filter keyword values and construct ``target`` exactly once.
+
+    ``strict=True`` checks copied values without converting them.
+    """
 
 
 @overload
@@ -1188,7 +1353,11 @@ def from_kwargs(
     *,
     strict: bool = False,
 ) -> partial[T]:
-    """Filter keyword values and return a partial without invoking the callable."""
+    """Filter keyword values and return a partial without calling ``target``.
+
+    ``strict=True`` checks copied values without converting them. Missing
+    required arguments and callable defaults remain open for the later call.
+    """
 
 
 def from_kwargs(
@@ -1197,7 +1366,11 @@ def from_kwargs(
     *,
     strict: bool = False,
 ) -> T | partial[T]:
-    """Filter keyword values, then construct a class or partially bind a callable."""
+    """Construct a class once or return a partial without calling a callable.
+
+    Only present top-level keyword values are used. ``strict=True`` checks them
+    without converting them.
+    """
 
     filtered = to_kwargs(target, values, strict=strict)
     if inspect.isclass(target):
@@ -1216,15 +1389,18 @@ def from_dict_operation(
     operation: Literal["dict", "json"] = "dict",
     construct: bool = True,
 ) -> T | dict[str, Any]:
-    """Decode one owner's encoded mapping values.
+    """Decode the named values for a class or callable.
 
-    The operation selects capability provenance, not direction: dict applies
-    dictionary capability and json applies canonical JSON capability. Strict
-    decoding requires full selected capability and exact, non-coercive encoded
-    input; permissive decoding keeps supported coercions and allows identity
-    fallback only for recursively type-correct Python values. construct=True
-    constructs or natively validates the owner; construct=False returns decoded
-    selected kwargs without invoking or constructing the target.
+    ``operation="dict"`` checks the rules for dictionary conversion.
+    ``operation="json"`` checks the narrower rules for JSON conversion. The
+    operation changes only those support rules; this function always decodes.
+    With ``strict=True``, every used annotation must be fully supported and the
+    input must already use an accepted dictionary or JSON form. The default mode
+    keeps the built-in type conversions and otherwise accepts only values that
+    match their full annotations. With ``construct=True``, the function
+    constructs or calls ``clazz`` once; a Pydantic model is validated once.
+    With ``construct=False``, it returns the decoded named arguments without
+    constructing or calling ``clazz``.
     """
 
     owner_name = field_name or cast(Any, clazz).__qualname__
@@ -1328,6 +1504,13 @@ def from_dict(
     strict: bool = False,
     field_name: str | None = None,
 ) -> T:
-    """Recursively decode dictionary-form values and construct a class instance."""
+    """Decode a mapping's nested values and construct one class instance.
+
+    By default, supported type conversions are applied and an unsupported value
+    may pass through only when it already fits its full annotation.
+    ``strict=True`` rejects unsupported annotations and input values in the
+    wrong encoded type. Missing constructor arguments remain the class's
+    responsibility.
+    """
 
     return cast(T, from_dict_operation(clazz, x, strict=strict, field_name=field_name, operation="dict"))

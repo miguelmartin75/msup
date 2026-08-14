@@ -30,14 +30,24 @@ from msup.base import (
 
 # fmt: off
 def cli(cmd_or_cmds: Callable[..., Any] | dict[Callable[..., Any], str], **argparse_kwargs) -> None:
-    """Parse command-line input and invoke the selected typed command."""
+    """Parse command-line values, convert them by annotation, and run the command.
+
+    A dictionary of commands creates subcommands. Unsupported command shapes or
+    type annotations raise ``TypeError`` while the parser is built.
+    """
     ...
 # fmt: on
 
 
 @dataclass(frozen=True)
 class CliArg(Metadata):
-    """Configure CLI help, names, sources, visibility, and kwargs relations."""
+    """Settings for how a field appears and gets its value on the CLI.
+
+    The settings cover help text, short and positional names, environment
+    variables, and an optional ``kwargs_for`` link. ``secret=True`` keeps the
+    option usable but hides its declared default and environment-derived value
+    from help output.
+    """
 
     help: str = ""
     short: str | None = ""
@@ -48,21 +58,25 @@ class CliArg(Metadata):
 
 
 def cliarg_from_annotations(annotations: list[Any]) -> CliArg | None:
-    """Return the sole CLI metadata value from an annotation list."""
+    """Return the only ``CliArg`` item, or ``None`` when there is no item."""
 
     metadata = metadata_from_annotations(annotations)
     return metadata if isinstance(metadata, CliArg) else None
 
 
 def error_exit(msg: str, code: int = 1):
-    """Print a CLI error and terminate with the requested status."""
+    """Print an error to standard error and exit with ``code``."""
 
     print(f"[ERROR]: {msg}", file=sys.stderr)
     sys.exit(code)
 
 
 def enum_argument_type(annotation: Any, field_name: str) -> Callable[[str], Any]:
-    """Build an argparse converter for the exact textual values of an enum."""
+    """Return an argparse converter that accepts an enum's exact value text.
+
+    Duplicate text forms raise ``TypeError`` while building the parser. Invalid
+    input raises ``argparse.ArgumentTypeError`` while parsing.
+    """
 
     enum_class = enum_type(annotation)
     assert enum_class is not None
@@ -84,7 +98,7 @@ def enum_argument_type(annotation: Any, field_name: str) -> Callable[[str], Any]
 
 
 def mapping_argument_type(field_name: str) -> Callable[[str], dict[str, Any]]:
-    """Build an argparse converter for an inline or file-backed JSON mapping."""
+    """Return an argparse converter for inline JSON or a JSON file path."""
 
     def convert(value: str) -> dict[str, Any]:
         try:
@@ -96,7 +110,10 @@ def mapping_argument_type(field_name: str) -> Callable[[str], dict[str, Any]]:
 
 
 def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], Any]:
-    """Return an argparse converter or reject an unsupported CLI annotation."""
+    """Return the argparse converter for one CLI annotation.
+
+    An unsupported annotation raises ``TypeError`` with the field name.
+    """
 
     annotation = effective_type(annotation, field_name)
     origin = get_origin(annotation) or annotation
@@ -132,7 +149,7 @@ def argument_type(annotation: Any, field_name: str) -> type | Callable[[str], An
 
 
 def add_argument(parser, args, kwargs, annotation, field_name, help_text, positional):
-    """Register one typed positional or optional argument with argparse."""
+    """Add one typed positional or named argument to an argparse parser."""
 
     field_type = effective_type(annotation, field_name)
     origin = get_origin(field_type) or field_type
@@ -158,7 +175,10 @@ def add_argument(parser, args, kwargs, annotation, field_name, help_text, positi
 
 
 def add_fields(parser, command_fields, prefix="", short_prefix=None, force_no_default=False):
-    """Register reflected fields and their nested structured CLI options."""
+    """Add inspected fields and nested model fields to an argparse parser.
+
+    The function also checks positional layout and short option names.
+    """
 
     parser._msup_fields[tuple(prefix.split(".")) if prefix else ()] = command_fields
     for field_index, f in enumerate(command_fields):
@@ -213,7 +233,7 @@ def add_fields(parser, command_fields, prefix="", short_prefix=None, force_no_de
 
 
 def add_args(parser, cmd_type, prefix="", short_prefix=None, pos_arg_config=False, force_no_default=False, fields=None):
-    """Register configuration and reflected field options for a typed command."""
+    """Add whole-command configuration and field options for a typed command."""
 
     if not prefix:
         if pos_arg_config:
@@ -230,7 +250,7 @@ def add_args(parser, cmd_type, prefix="", short_prefix=None, pos_arg_config=Fals
 
 
 def add_direct_args(parser, command_args: list[FieldSpec], pos_arg_config: bool = False):
-    """Register configuration and field options for a direct callable command."""
+    """Add configuration and field options for a function or method command."""
 
     if pos_arg_config:
         parser.add_argument("args", nargs="?", type=argument_type(dict[str, Any], "args"), default=argparse.SUPPRESS)
@@ -245,7 +265,11 @@ def add_direct_args(parser, command_args: list[FieldSpec], pos_arg_config: bool 
 
 
 def config_values(args) -> dict:
-    """Decode the parsed top-level CLI configuration mapping."""
+    """Decode the top-level JSON configuration found in parsed CLI values.
+
+    Return an empty dictionary when no configuration was supplied. A non-object
+    configuration raises ``TypeError``.
+    """
 
     raw = getattr(args, "args", None)
     if raw is None:
@@ -258,7 +282,7 @@ def config_values(args) -> dict:
 
 
 def parse_args(parser):
-    """Parse argv while preserving a configured positional remainder."""
+    """Parse command-line input and keep a configured positional remainder intact."""
 
     raw_args = sys.argv[1:]
     args, unknown = parser.parse_known_args(raw_args)
@@ -273,7 +297,7 @@ def parse_args(parser):
 
 
 def has_nested_source(clazz: type, args, config: dict, prefix: str) -> bool:
-    """Whether config, environment, or CLI supplies a value below ``prefix``."""
+    """Return whether config, environment, or CLI supplies a nested value."""
 
     for f in fields_or_init_kwargs(clazz):
         name = f"{prefix}.{f.name}" if prefix else f.name
@@ -293,7 +317,10 @@ def has_nested_source(clazz: type, args, config: dict, prefix: str) -> bool:
 
 
 def merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
-    """Recursively overlay mappings while replacing non-mapping values."""
+    """Return ``base`` with nested mappings merged from ``overlay``.
+
+    Values that are not mappings are replaced by the value from ``overlay``.
+    """
 
     result = dict(base)
     for key, value in overlay.items():
@@ -305,7 +332,12 @@ def merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]
 
 
 def target_options(parser, targets, path, args=None):
-    """Register or collect dotted options for one cached selected schema."""
+    """Add or read dotted options for one previously inspected selected target.
+
+    Passing ``args=None`` adds options to ``parser``. Passing parsed ``args``
+    returns the supplied values. Selected targets are never constructed or
+    called.
+    """
 
     result = {}
     for field in targets[path]:
@@ -336,7 +368,12 @@ def target_options(parser, targets, path, args=None):
 
 
 def bootstrap(args, config, path, fields_by_path, active_paths, cache, targets, help_requested):
-    """Resolve selectors once and cache schemas and defaults for dynamic options."""
+    """Resolve each callable selector once and prepare its dynamic CLI options.
+
+    Inspected parameters and evaluated defaults are cached so factories run at
+    most once. Selected classes, functions, and methods are never constructed or
+    called.
+    """
 
     fields = fields_by_path[path]
     positional = next(
@@ -396,7 +433,13 @@ def bootstrap(args, config, path, fields_by_path, active_paths, cache, targets, 
 
 
 def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None, fields_by_path=None):
-    """Merge permissive CLI sources and construct one typed command value."""
+    """Convert CLI sources into a class instance or a callable argument mapping.
+
+    Values from config are overridden by environment values, then by explicit
+    command-line values. Class targets are constructed once. Function and method
+    targets return a dictionary and are not called. Selected ``kwargs_for``
+    targets are inspected but never constructed or called.
+    """
 
     config = {} if config is None else config
     cache = {} if cache is None else cache
@@ -491,7 +534,11 @@ def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None,
 
 
 def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | None = None) -> dict:
-    """Merge permissive CLI sources for a direct callable command."""
+    """Convert CLI sources into arguments for a function or method.
+
+    Values from config are overridden by environment values, then by explicit
+    command-line values. The callable is not called.
+    """
 
     config = {} if config is None else config
     result = {}
@@ -516,7 +563,11 @@ def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | Non
 
 
 def cli(cmd_or_cmds: Callable[..., Any] | dict[Callable[..., Any], str], **argparse_kwargs) -> None:
-    """Parse command-line input and invoke the selected typed command."""
+    """Parse command-line values, convert them by annotation, and run the command.
+
+    A dictionary of commands creates subcommands. Unsupported command shapes or
+    type annotations raise ``TypeError`` while the parser is built.
+    """
 
     pos_arg_config = argparse_kwargs.pop("pos_arg_config", False)
     argparse_kwargs.setdefault("argument_default", argparse.SUPPRESS)

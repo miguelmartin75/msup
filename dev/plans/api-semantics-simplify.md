@@ -11,7 +11,7 @@
 - Follow-up 1: Complete
 - Follow-up 2: Complete
 - Follow-up 3: Complete
-- Follow-up 4: In progress
+- Follow-up 4: Complete
 
 Update each phase to `In progress`, `Complete`, or `Blocked` while executing
 this plan. Record the exact validation command and result beneath every
@@ -887,7 +887,7 @@ the meaningful reuse and branch-collapse requirements and must not compress
 formatting, remove required docstrings or errors, move code outside the metric,
 or introduce a mode or callback conversion framework merely to reduce LOC.
 
-**Current validation result:** `./run.py test` passed all 112 tests and 114
+**Phase 6 validation result:** `./run.py test` passed all 112 tests and 114
 parameterized subtests. `./run.py examples`, `./run.py check`, and `git diff
 --check` passed. `rg -n '^def _|^class _' msup` produced no matches. Physical
 LOC is 1,210 for `msup/base.py` and 642 for `msup/cli.py`. The exact redundant
@@ -1118,7 +1118,7 @@ format), and `git diff --check` passed.
 
 ### Follow-up 4: Simplify docstrings
 
-**Status:** In progress
+**Status:** Complete
 
 Rewrite docstrings added or modified by this plan in simple language. Preserve
 the complete public behavior, constraints, return categories, errors, stable
@@ -1138,3 +1138,19 @@ passes.
 
 **Validation:** Run `./run.py test`, `./run.py examples`, `./run.py check`, and
 `git diff --check`.
+
+**Implementation discovery:** Plain wording can preserve the complete contract
+when each docstring states concrete behavior instead of internal terminology.
+The operation functions now name every allowed operation, explain the narrower
+JSON rules, and state plainly that the operation changes support checks rather
+than encode or decode direction. Exact Python and dependency names remain only
+where they identify real public concepts.
+
+**Validation result:** An AST comparison with commit `2897285` after removing
+docstrings confirmed no executable, signature, or control-flow changes. Every
+public declaration remains documented, stable forward and implementation
+docstrings match, and the `from_kwargs` overloads and implementation agree.
+`./run.py test` passed all 112 tests. `./run.py examples`, `./run.py check` (ty,
+Ruff lint, and Ruff format), and `git diff --check` passed. Only
+`msup/base.py` and `msup/cli.py` changed; `README.md` already matched the public
+contract.
