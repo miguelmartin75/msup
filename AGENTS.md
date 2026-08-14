@@ -28,6 +28,7 @@ Follow the repository instructions in `CODE_GUIDELINES.md` when changing Python 
 - Use conditionals or return values for expected outcomes. Raise exceptions for invalid boundary input, violated preconditions, I/O failures, or external failures. Catch only to recover, add context, or translate at a boundary.
 - Use `list[T]` for variable-length homogeneous collections and fixed tuples for short-lived unpacked values. Use `dataclass` for named structured values stored, passed across boundaries, or used at multiple call sites.
 - Prefer branching to early returns. Use early returns only for guards, successful searches, or measurable runtime improvements. Return simple expressions directly.
+- When conditions are mutually exclusive alternatives, express them as one `if`/`elif`/`else` chain, including when a branch ends with `return`, `continue`, or `break`. Do not write them as consecutive standalone `if` statements.
 - When a return value must be assembled across multiple steps, use `result` as the default variable name and return it once.
 - Order modules top-down by dependency: imports; constants and aliases; enums and classes; functions; entry point. Dependency order overrides grouping. Keep mutual recursion adjacent unless breaking the cycle is simpler.
 - Keep literals inline for up to three same-meaning uses. Name them at four uses, or earlier to convey units, protocols, formats, sentinels, domain thresholds, or defaults.

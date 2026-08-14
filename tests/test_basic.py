@@ -876,7 +876,7 @@ class BasicTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "invalid State value"):
             from_dict(EnumValues, {**serialized, "child": {"state": "unknown"}})
         with self.assertRaisesRegex(TypeError, "invalid.*must be str, int, float, or bool"):
-            from_dict_value("not", InvalidState, str, "invalid")
+            from_dict_value("not", InvalidState, "invalid")
 
     def test_ambiguous_unions_and_invalid_dict_strings_are_rejected(self):
         @dataclass
@@ -919,7 +919,7 @@ class BasicTests(unittest.TestCase):
         self.assertIs(to_dict(Owner(child))["payload"], child)
         self.assertEqual(to_dict(OptionalOwner()), {"payload": None})
         self.assertEqual(effective_type(list[int] | None, "values"), list[int])
-        self.assertEqual(from_dict_value(["1"], list[int], list, "values"), [1])
+        self.assertEqual(from_dict_value(["1"], list[int], "values"), [1])
         self.assertEqual(to_dict_value([1], list[int]), [1])
         with self.assertRaisesRegex(TypeError, "non-optional union"):
             effective_type(int | str, "value")
@@ -950,7 +950,7 @@ class BasicTests(unittest.TestCase):
         ]
         for source, annotation, expected in success_cases:
             with self.subTest(source=source, annotation=annotation):
-                result = from_dict_value(source, annotation, type(source), "value", strict=True)
+                result = from_dict_value(source, annotation, "value", strict=True)
                 if annotation is Any:
                     self.assertIs(result, source)
                 else:
@@ -975,30 +975,30 @@ class BasicTests(unittest.TestCase):
         for source, annotation in failure_cases:
             with self.subTest(source=source, annotation=annotation):
                 with self.assertRaises(TypeError):
-                    from_dict_value(source, annotation, type(source), "value", strict=True)
+                    from_dict_value(source, annotation, "value", strict=True)
 
         with self.assertRaisesRegex(TypeError, "not supported for json"):
-            from_dict_value({}, Any, dict, "value", strict=True, operation="json")
+            from_dict_value({}, Any, "value", strict=True, operation="json")
         with self.assertRaisesRegex(TypeError, "not supported for json"):
-            from_dict_value({1: 2}, dict[int, int], dict, "value", strict=True, operation="json")
+            from_dict_value({1: 2}, dict[int, int], "value", strict=True, operation="json")
 
     def test_permissive_list_decoding_accepts_tuple_carriers(self):
-        self.assertEqual(from_dict_value(("1", 2), list[int], tuple, "values"), [1, 2])
+        self.assertEqual(from_dict_value(("1", 2), list[int], "values"), [1, 2])
         with self.assertRaisesRegex(TypeError, r"values: list\[int\].*tuple"):
-            from_dict_value((1, 2), list[int], tuple, "values", strict=True)
+            from_dict_value((1, 2), list[int], "values", strict=True)
 
     def test_strict_callable_strings_require_canonical_references(self):
         canonical = f"{__name__}.increment"
         alias = f"{__name__}.increment_alias"
 
-        self.assertIs(from_dict_value(canonical, Callable[..., Any], str, "callback", strict=True), increment)
-        self.assertIs(from_dict_value(alias, Callable[..., Any], str, "callback"), increment)
+        self.assertIs(from_dict_value(canonical, Callable[..., Any], "callback", strict=True), increment)
+        self.assertIs(from_dict_value(alias, Callable[..., Any], "callback"), increment)
         with self.assertRaisesRegex(TypeError, "callback:.*not the canonical reference"):
-            from_dict_value(alias, Callable[..., Any], str, "callback", strict=True)
+            from_dict_value(alias, Callable[..., Any], "callback", strict=True)
         for malformed in ("not a valid:reference:name", f"{__name__}.missing"):
             with self.subTest(malformed=malformed):
                 with self.assertRaisesRegex(TypeError, "callback:.*does not resolve to a callable"):
-                    from_dict_value(malformed, Callable[..., Any], str, "callback", strict=True)
+                    from_dict_value(malformed, Callable[..., Any], "callback", strict=True)
 
     def test_strict_entry_points_reject_coercion_and_unsupported_identity(self):
         @dataclass
@@ -1017,12 +1017,12 @@ class BasicTests(unittest.TestCase):
             to_dict(ScalarOwner(cast(Any, "3")), strict=True)
 
         valid_set = {1, 2}
-        self.assertIs(from_dict_value(valid_set, set[int], set, "values"), valid_set)
+        self.assertIs(from_dict_value(valid_set, set[int], "values"), valid_set)
         self.assertIs(to_dict_value(valid_set, set[int]), valid_set)
         for invalid in ({"1", "2"},):
             with self.subTest(invalid=invalid):
                 with self.assertRaises(TypeError):
-                    from_dict_value(invalid, set[int], set, "values")
+                    from_dict_value(invalid, set[int], "values")
                 with self.assertRaises(TypeError):
                     to_dict_value(invalid, set[int])
         with self.assertRaisesRegex(TypeError, "SetOwner.values.*not supported for dict"):

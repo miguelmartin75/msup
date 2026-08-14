@@ -11,7 +11,7 @@
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Callable
 
-from msup.base import Kwargs, from_dict, from_json, to_json
+from msup.base import Kwargs, from_dict, from_json, from_kwargs, kwargs_from_dict, to_json
 from msup.cli import CliArg, cli
 
 
@@ -49,6 +49,13 @@ def convert() -> None:
     print(json_text)
     print(f"{round_trip.kwargs=}")
     print(f"{calls=}")
+
+    prepared = kwargs_from_dict(launch, payload["kwargs"])
+    launch_later = from_kwargs(launch, prepared)
+    assert calls == 0
+    print(f"before explicit function call: {calls=}")
+    print(launch_later())
+    print(f"after explicit function call: {calls=}")
 
 
 def run(job: Job) -> None:

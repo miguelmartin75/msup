@@ -127,10 +127,10 @@ Only importable functions, methods, and classes have a canonical reference.
 For non-CLI conversion, `from_dict(Job, payload)` and `from_json(Job, text)`
 produce a typed `Job`; `to_dict(job)` and `to_json(job)` emit a canonical target
 reference and typed explicit kwargs. `kwargs_from_dict(target, values)` converts
-only the selected target's explicit mapping. `from_kwargs(owner, values)` does
-the same relation-aware conversion for dataclass, regular-class, Pydantic v2,
-or direct-function owners and returns an argument mapping without calling a
-direct function.
+only the selected target's explicit mapping. In contrast, `to_kwargs` is a
+shallow projection: it selects present top-level values without recursively
+converting them. `from_kwargs` uses that projection to construct a class once
+or return a non-invoking `functools.partial` for a function or method.
 
 ## Dynamic CLI precedence and defaults
 
@@ -182,7 +182,7 @@ Direct function owners are useful outside `cli` too:
 ```python
 from typing import Annotated, Any, Callable
 
-from msup.base import Kwargs, Metadata, from_kwargs
+from msup.base import Kwargs, Metadata, from_kwargs, kwargs_from_dict
 
 
 def run(
@@ -192,12 +192,43 @@ def run(
     target(**kwargs)
 
 
-arguments = from_kwargs(
+payload = {
+    "target": "examples.kwargs_for.launch",
+    "kwargs": {"workers": "2", "limits": {"memory_gb": "8"}},
+}
+arguments = kwargs_from_dict(run, payload)
+bound = from_kwargs(
     run,
-    {"target": "examples.kwargs_for.launch", "kwargs": {"workers": 2, "limits": {"memory_gb": 8}}},
+    arguments,
 )
-# run has not been called. The application may now choose run(**arguments).
+assert bound.func is run  # run and its selected target have not been called.
+bound()  # The application explicitly chooses when to invoke run.
 ```
+
+# Conversion modes and API stability
+
+Dictionary and JSON conversion are recursive and annotation-directed.
+`strict=False` is the default: supported values are converted, while an
+unsupported annotation may pass through only when the value already matches it
+recursively. `strict=True` instead requires complete support for the requested
+operation and rejects coercion at the conversion boundary.
+
+Support is operation-specific. Use `is_annotation_supported(annotation,
+operation="type_check" | "dict" | "json")` to ask whether msup can completely
+check Python values, round-trip dictionary-form values, or produce a canonical
+JSON representation. The JSON domain is deliberately narrower than the
+dictionary domain: JSON object keys must be strings, and `Any` is not strictly
+JSON-supported because its runtime value may not be representable. For example,
+`dict[int, int]` and `dict[str, Any]` can be recursively converted as dictionary
+values but are not guaranteed strict JSON round trips.
+
+The stable, compatibility-promised API is `Kwargs`, `Metadata`,
+`is_annotation_supported`, `is_value_of_type`, `to_dict`, `from_dict`,
+`to_json`, `from_json`, `to_kwargs`, `from_kwargs`, `kwargs_from_dict`,
+`load_callable`, `dump_callable`, `str_to_bool`, `dict_from_str`, `CliArg`, and
+`cli`. Other documented public declarations in `msup.base` and `msup.cli` are
+provisional implementation APIs for advanced use and may change before they
+are promoted to this list.
 
 # More examples
 

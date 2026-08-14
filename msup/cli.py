@@ -19,6 +19,7 @@ from msup.base import (
     has_default_value,
     is_pydantic_model,
     is_structured_model,
+    materialize_default,
     metadata_from_annotations,
     selected_target_fields,
     str_to_bool,
@@ -50,8 +51,7 @@ def cliarg_from_annotations(annotations: list[Any]) -> CliArg | None:
     """Return the sole CLI metadata value from an annotation list."""
 
     metadata = metadata_from_annotations(annotations)
-    result = metadata if isinstance(metadata, CliArg) else None
-    return result
+    return metadata if isinstance(metadata, CliArg) else None
 
 
 def error_exit(msg: str, code: int = 1):
@@ -78,7 +78,7 @@ def enum_argument_type(annotation: Any, field_name: str) -> Callable[[str], Any]
             raise argparse.ArgumentTypeError(
                 f"{field_name}: invalid {enum_class.__name__} value {value!r}; expected one of {list(values_by_text)}"
             )
-        return from_dict_value(values_by_text[value], enum_class, type(values_by_text[value]), field_name)
+        return from_dict_value(values_by_text[value], enum_class, field_name)
 
     return convert
 
@@ -88,7 +88,7 @@ def mapping_argument_type(field_name: str) -> Callable[[str], dict[str, Any]]:
 
     def convert(value: str) -> dict[str, Any]:
         try:
-            return from_dict_value(value, dict[str, Any], str, field_name)
+            return from_dict_value(value, dict[str, Any], field_name)
         except (AssertionError, AttributeError, OSError, ValueError) as error:
             raise argparse.ArgumentTypeError(f"{field_name}: {error}") from error
 
@@ -251,7 +251,7 @@ def config_values(args) -> dict:
     if raw is None:
         result = {}
     else:
-        result = from_dict_value(raw, dict[str, Any], str, "args")
+        result = from_dict_value(raw, dict[str, Any], "args")
         if not isinstance(result, dict):
             raise TypeError(f"args: configuration must be a JSON object, got {type(result)}")
     return result
@@ -274,6 +274,7 @@ def parse_args(parser):
 
 def has_nested_source(clazz: type, args, config: dict, prefix: str) -> bool:
     """Whether config, environment, or CLI supplies a value below ``prefix``."""
+
     for f in fields_or_init_kwargs(clazz):
         name = f"{prefix}.{f.name}" if prefix else f.name
         annotation = f.annotation
@@ -281,9 +282,9 @@ def has_nested_source(clazz: type, args, config: dict, prefix: str) -> bool:
         config_value = config.get(f.name, MISSING)
         if config_value is not MISSING or (cli_arg and cli_arg.env and os.getenv(cli_arg.env) is not None):
             return True
-        if hasattr(args, name) or hasattr(args, f"{name}_pos"):
+        elif hasattr(args, name) or hasattr(args, f"{name}_pos"):
             return True
-        if is_structured_model(effective_type(annotation, name)) and has_nested_source(
+        elif is_structured_model(effective_type(annotation, name)) and has_nested_source(
             effective_type(annotation, name), args, config_value if isinstance(config_value, dict) else {}, name
         ):
             return True
@@ -295,11 +296,10 @@ def merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]
 
     result = dict(base)
     for key, value in overlay.items():
-        result[key] = (
-            merge(cast(Mapping[str, Any], result[key]), value)
-            if isinstance(result.get(key), Mapping) and isinstance(value, Mapping)
-            else value
-        )
+        if isinstance(result.get(key), Mapping) and isinstance(value, Mapping):
+            result[key] = merge(cast(Mapping[str, Any], result[key]), value)
+        else:
+            result[key] = value
     return result
 
 
@@ -364,9 +364,9 @@ def bootstrap(args, config, path, fields_by_path, active_paths, cache, targets, 
                     raise TypeError(
                         f"{'.'.join((*path, dependents[field.name][0].name))}: missing selector {field.name!r}"
                     )
-                value = deepcopy(field.default) if field.default is not MISSING else field.default_factory()
+                value = materialize_default(field)
             try:
-                target = from_dict_value(value, field.annotation, type(value), name)
+                target = from_dict_value(value, field.annotation, name)
             except (AttributeError, ImportError, ValueError) as error:
                 raise TypeError(f"{name}: {error}") from error
             try:
@@ -384,7 +384,7 @@ def bootstrap(args, config, path, fields_by_path, active_paths, cache, targets, 
                 child.name in nested or hasattr(args, ".".join((*field_path, child.name))) for child in child_fields
             )
             if not complete and (field.default is not MISSING or field.default_factory is not MISSING):
-                default = deepcopy(field.default) if field.default is not MISSING else field.default_factory()
+                default = materialize_default(field)
                 cache[field_path] = default
                 projected = to_kwargs(field_type, default)
                 nested = merge(projected, nested)
@@ -423,26 +423,18 @@ def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None,
             values = {}
             for source in (config_value, env_value, cli_value):
                 if source is not MISSING and source is not None:
-                    values = merge(values, from_dict_value(source, dict[str, Any], type(source), name))
+                    values = merge(values, from_dict_value(source, dict[str, Any], name))
             values = merge(values, target_options(None, targets, field_path, args))
             if any(parameter.name not in values for parameter in targets[field_path]):
                 if field_path not in cache:
-                    cache[field_path] = (
-                        deepcopy(f.default)
-                        if f.default is not MISSING
-                        else f.default_factory()
-                        if f.default_factory is not MISSING
-                        else {}
-                    )
+                    cache[field_path] = materialize_default(f, {})
                 values = {**cache[field_path], **values}
             validate_selected_mapping(targets[field_path], values, name)
             converted = {}
             for parameter in targets[field_path]:
                 if parameter.name in values:
                     value = values[parameter.name]
-                    converted[parameter.name] = from_dict_value(
-                        value, parameter.annotation, type(value), f"{name}.{parameter.name}"
-                    )
+                    converted[parameter.name] = from_dict_value(value, parameter.annotation, f"{name}.{parameter.name}")
             construct_args[f.name] = converted
         elif is_structured_model(field_type):
             value = config_value
@@ -457,7 +449,7 @@ def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None,
             elif is_structured_model(value):
                 nested_config = {child.name: getattr(value, child.name) for child in fields_or_init_kwargs(type(value))}
             else:
-                converted = from_dict_value(value, field_type, type(value), name)
+                converted = from_dict_value(value, field_type, name)
                 nested_config = {
                     child.name: getattr(converted, child.name) for child in fields_or_init_kwargs(type(converted))
                 }
@@ -470,7 +462,7 @@ def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None,
                 and (not is_dataclass(clazz) or has_default_value(f))
             ):
                 continue
-            if value is MISSING and is_dataclass(clazz) and not has_default_value(f):
+            elif value is MISSING and is_dataclass(clazz) and not has_default_value(f):
                 error_exit(f"--{name} not provided (default value DNE)", 3)
             construct_args[f.name] = from_cli_args(
                 field_type, args, nested_config, name, cache, targets, fields_by_path
@@ -484,22 +476,21 @@ def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None,
             if field_path in cache and any(item.kwargs_relation is f for item in fields):
                 construct_args[f.name] = cache[field_path]
             elif value is not MISSING:
-                construct_args[f.name] = (
-                    value if pydantic_owner else from_dict_value(value, annotation, type(value), name)
-                )
+                if pydantic_owner:
+                    construct_args[f.name] = value
+                else:
+                    construct_args[f.name] = from_dict_value(value, annotation, name)
             elif (is_dataclass(clazz) or not is_structured_model(clazz)) and not has_default_value(f):
                 error_exit(f"--{name} not provided (default value DNE)", 3)
     if pydantic_owner:
         values = deepcopy(config)
         values.update(construct_args)
-        construct_args = values
-    return (
-        clazz.model_validate(construct_args)
-        if pydantic_owner
-        else clazz(**construct_args)
-        if inspect.isclass(clazz)
-        else construct_args
-    )
+        result = clazz.model_validate(values)
+    elif inspect.isclass(clazz):
+        result = clazz(**construct_args)
+    else:
+        result = construct_args
+    return result
 
 
 def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | None = None) -> dict:
@@ -521,7 +512,7 @@ def from_direct_cli_args(command_args: list[FieldSpec], args, config: dict | Non
             value = getattr(args, f"{name}_pos")
 
         if value is not MISSING:
-            result[name] = from_dict_value(value, annotation, type(value), name)
+            result[name] = from_dict_value(value, annotation, name)
         elif command_arg.default is MISSING:
             error_exit(f"--{name} not provided (default value DNE)", 3)
     return result
