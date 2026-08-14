@@ -579,20 +579,19 @@ def is_annotation_supported(
         current = normalize_annotation(current)
         origin = annotation_origin(current)
         if current in visiting:
-            return True
+            result = True
         elif current is Any:
-            return operation != "json"
+            result = operation != "json"
         elif current is type(None):
-            return True
+            result = True
         elif origin in (Union, UnionType):
-            return all(check(member, visiting) for member in get_args(current))
+            result = all(check(member, visiting) for member in get_args(current))
         elif origin is dict:
             key_type, value_type = get_collection_args(current)
-            return (
-                key_type is str and check(value_type, visiting)
-                if operation == "json"
-                else check(key_type, visiting) and check(value_type, visiting)
-            )
+            if operation == "json":
+                result = key_type is str and check(value_type, visiting)
+            else:
+                result = check(key_type, visiting) and check(value_type, visiting)
         elif origin in (list, tuple, set):
             args = get_args(current)
             if not args:
@@ -601,19 +600,19 @@ def is_annotation_supported(
                 item_types = (args[0],)
             else:
                 item_types = args
-            return (operation == "type_check" or origin is not set) and all(
+            result = (operation == "type_check" or origin is not set) and all(
                 check(item, visiting) for item in item_types
             )
         elif origin in (int, float, str, bool, Callable2):
-            return True
+            result = True
         elif (enum_class := enum_type(current)) is not None:
-            return operation == "type_check" or all(
+            result = operation == "type_check" or all(
                 type(member.value) in (str, int, float, bool) for member in enum_class
             )
         elif not is_structured_model(current):
-            return operation == "type_check" and inspect.isclass(origin)
+            result = operation == "type_check" and inspect.isclass(origin)
         elif operation == "type_check":
-            return True
+            result = True
         else:
             visiting.add(current)
             result = all(
@@ -632,45 +631,48 @@ def is_value_of_type(value: Any, annotation: Any) -> bool:
 
     annotation = normalize_annotation(annotation)
     if not is_annotation_supported(annotation, operation="type_check"):
-        return False
+        result = False
     elif annotation is Any:
-        return True
+        result = True
     elif annotation is type(None):
-        return value is None
-    origin = annotation_origin(annotation)
-    if origin in (Union, UnionType):
-        return any(is_value_of_type(value, member) for member in get_args(annotation))
-    elif (enum_class := enum_type(annotation)) is not None:
-        return isinstance(value, enum_class)
-    elif origin is Callable2:
-        return callable(value)
-    elif origin in (int, float, str, bool):
-        return type(value) is origin
-    elif origin in (dict, list, set):
-        if not isinstance(value, origin):
-            return False
-        item_types = get_collection_args(annotation)
-        if origin is dict:
-            return all(
-                is_value_of_type(key, item_types[0]) and is_value_of_type(item, item_types[1])
-                for key, item in value.items()
-            )
-        return all(is_value_of_type(item, item_types[0]) for item in value)
-    elif origin is not tuple:
-        return isinstance(value, annotation if is_structured_model(annotation) else origin)
-    elif not isinstance(value, tuple):
-        return False
+        result = value is None
     else:
-        args = get_args(annotation)
-        if not args:
-            result = True
-        elif len(args) == 2 and args[1] is Ellipsis:
-            result = all(is_value_of_type(item, args[0]) for item in value)
+        origin = annotation_origin(annotation)
+        if origin in (Union, UnionType):
+            result = any(is_value_of_type(value, member) for member in get_args(annotation))
+        elif (enum_class := enum_type(annotation)) is not None:
+            result = isinstance(value, enum_class)
+        elif origin is Callable2:
+            result = callable(value)
+        elif origin in (int, float, str, bool):
+            result = type(value) is origin
+        elif origin in (dict, list, set):
+            if not isinstance(value, origin):
+                result = False
+            else:
+                item_types = get_collection_args(annotation)
+                if origin is dict:
+                    result = all(
+                        is_value_of_type(key, item_types[0]) and is_value_of_type(item, item_types[1])
+                        for key, item in value.items()
+                    )
+                else:
+                    result = all(is_value_of_type(item, item_types[0]) for item in value)
+        elif origin is not tuple:
+            result = isinstance(value, annotation if is_structured_model(annotation) else origin)
+        elif not isinstance(value, tuple):
+            result = False
         else:
-            result = len(value) == len(args) and all(
-                is_value_of_type(item, args[index]) for index, item in enumerate(value)
-            )
-        return result
+            args = get_args(annotation)
+            if not args:
+                result = True
+            elif len(args) == 2 and args[1] is Ellipsis:
+                result = all(is_value_of_type(item, args[0]) for item in value)
+            else:
+                result = len(value) == len(args) and all(
+                    is_value_of_type(item, args[index]) for index, item in enumerate(value)
+                )
+    return result
 
 
 def selected_target_fields(target: type | Callable[..., Any]) -> list[FieldSpec]:
@@ -745,68 +747,73 @@ def from_dict_value(
             result = None
         else:
             raise TypeError(f"{field_name}: {field_type} cannot be converted from None")
-        return result
     elif origin in (Union, UnionType):
         if not strict:
             member = union_member(field_type, concrete_type, field_name)
-            return from_dict_value(x, member, field_name, operation=operation)
-        matches = []
-        for member in get_args(field_type):
-            try:
-                matches.append(from_dict_value(x, member, field_name, strict=True, operation=operation))
-            except (AssertionError, AttributeError, ImportError, TypeError, ValueError):
-                continue
-        if len(matches) != 1:
-            detail = "no exact conversion" if not matches else "ambiguous exact conversion"
-            raise TypeError(f"{field_name}: {detail} from {concrete_type} to {field_type}")
-        return matches[0]
+            result = from_dict_value(x, member, field_name, operation=operation)
+        else:
+            matches = []
+            for member in get_args(field_type):
+                try:
+                    matches.append(from_dict_value(x, member, field_name, strict=True, operation=operation))
+                except (AssertionError, AttributeError, ImportError, TypeError, ValueError):
+                    continue
+            if len(matches) != 1:
+                detail = "no exact conversion" if not matches else "ambiguous exact conversion"
+                raise TypeError(f"{field_name}: {detail} from {concrete_type} to {field_type}")
+            result = matches[0]
     elif (enum_class := enum_type(field_type)) is not None:
         validate_enum_values(enum_class, field_name)
         if isinstance(x, enum_class):
-            return x
-        values = [member.value for member in enum_class]
-        if strict and not any(type(x) is type(value) and x == value for value in values):
-            raise TypeError(f"{field_name}: invalid exact {enum_class.__name__} value {x!r}; expected one of {values}")
-        try:
-            return enum_class(x)
-        except ValueError as error:
-            raise TypeError(
-                f"{field_name}: invalid {enum_class.__name__} value {x!r}; expected one of {values}"
-            ) from error
+            result = x
+        else:
+            values = [member.value for member in enum_class]
+            if strict and not any(type(x) is type(value) and x == value for value in values):
+                raise TypeError(
+                    f"{field_name}: invalid exact {enum_class.__name__} value {x!r}; expected one of {values}"
+                )
+            try:
+                result = enum_class(x)
+            except ValueError as error:
+                raise TypeError(
+                    f"{field_name}: invalid {enum_class.__name__} value {x!r}; expected one of {values}"
+                ) from error
     elif origin is Callable2:
         if callable(x):
-            return x
+            result = x
         elif not isinstance(x, str):
             raise TypeError(f"{field_name}: expected a callable or importable callable reference")
-        try:
-            result = load_callable(x)
-        except (AttributeError, ImportError, ValueError) as error:
-            raise TypeError(f"{field_name}: {x!r} does not resolve to a callable") from error
-        if not callable(result):
-            raise TypeError(f"{field_name}: {x} does not resolve to a callable")
-        if strict and (canonical_name := dump_callable(result)) != x:
-            raise TypeError(f"{field_name}: {x!r} is not the canonical reference {canonical_name!r}")
-        return result
+        else:
+            try:
+                result = load_callable(x)
+            except (AttributeError, ImportError, ValueError) as error:
+                raise TypeError(f"{field_name}: {x!r} does not resolve to a callable") from error
+            if not callable(result):
+                raise TypeError(f"{field_name}: {x} does not resolve to a callable")
+            if strict and (canonical_name := dump_callable(result)) != x:
+                raise TypeError(f"{field_name}: {x!r} is not the canonical reference {canonical_name!r}")
     elif field_type is Any:
-        return x
+        result = x
     elif is_structured_model(field_type):
         if isinstance(x, field_type):
-            return x
-        elif isinstance(x, str) and not strict:
-            x = dict_from_str(x)
-        if isinstance(x, Mapping):
-            return from_dict_operation(field_type, x, strict=strict, field_name=field_name, operation=operation)
-        raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
+            result = x
+        else:
+            if isinstance(x, str) and not strict:
+                x = dict_from_str(x)
+            if isinstance(x, Mapping):
+                result = from_dict_operation(field_type, x, strict=strict, field_name=field_name, operation=operation)
+            else:
+                raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
     elif origin in (int, float, str, bool):
         if strict and type(x) is not origin:
             raise TypeError(f"{field_name}: expected exact {origin.__name__}, got {type(x).__name__}")
-        return str_to_bool(x) if origin is bool and isinstance(x, str) else field_type(x)
+        result = str_to_bool(x) if origin is bool and isinstance(x, str) else field_type(x)
     elif origin is dict:
         raw = dict_from_str(x) if isinstance(x, str) and not strict else x
         if not isinstance(raw, Mapping):
             raise TypeError(f"{field_name}: expected a mapping, got {type(raw)}")
         key_type, value_type = get_collection_args(field_type)
-        return {
+        result = {
             from_dict_value(key, key_type, f"{field_name}.key", strict=strict, operation=operation): from_dict_value(
                 value, value_type, f"{field_name}.value", strict=strict, operation=operation
             )
@@ -820,7 +827,7 @@ def from_dict_value(
         if origin is tuple and len(get_args(field_type)) > 1 and get_args(field_type)[1] is not Ellipsis:
             if len(x) != len(item_types):
                 raise TypeError(f"{field_name}: expected {len(item_types)} tuple values, got {len(x)}")
-        return origin(
+        result = origin(
             from_dict_value(
                 item,
                 item_types[index] if index < len(item_types) else Any,
@@ -831,9 +838,10 @@ def from_dict_value(
             for index, item in enumerate(x)
         )
     elif not strict and is_value_of_type(x, field_type):
-        return x
+        result = x
     else:
         raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
+    return result
 
 
 def to_dict_value(
@@ -861,26 +869,28 @@ def to_dict_value(
         raise TypeError(f"{field_name}: expected {field_type}, got {type(x)}")
     if x is None:
         if field_type in (Any, type(None)) or is_optional(field_type):
-            return None
-        raise TypeError(f"{field_name}: expected {field_type}, got None")
+            result = None
+        else:
+            raise TypeError(f"{field_name}: expected {field_type}, got None")
     elif origin in (Union, UnionType):
         matches = [member for member in get_args(field_type) if is_value_of_type(x, member)]
         if strict and len(matches) != 1:
             raise TypeError(f"{field_name}: ambiguous exact value for {field_type}")
         member = matches[0] if strict else union_member(field_type, type(x), field_name)
-        return to_dict_value(x, member, field_name, strict=strict, operation=operation)
+        result = to_dict_value(x, member, field_name, strict=strict, operation=operation)
     elif field_type is Any:
-        return x
+        result = x
     elif (enum_class := enum_type(field_type)) is not None:
         validate_enum_values(enum_class, field_name)
         if isinstance(x, enum_class):
-            return x.value
-        raise TypeError(f"{field_name}: expected {enum_class.__name__} value, got {type(x)}")
+            result = x.value
+        else:
+            raise TypeError(f"{field_name}: expected {enum_class.__name__} value, got {type(x)}")
     elif is_structured_model(field_type):
-        return to_dict_operation(x, strict=strict, field_name=field_name, operation=operation)
+        result = to_dict_operation(x, strict=strict, field_name=field_name, operation=operation)
     elif origin is dict:
         key_type, value_type = get_collection_args(field_type)
-        return {
+        result = {
             to_dict_value(key, key_type, f"{field_name}.key", strict=strict, operation=operation): to_dict_value(
                 value, value_type, f"{field_name}.value", strict=strict, operation=operation
             )
@@ -892,23 +902,25 @@ def to_dict_value(
             to_dict_value(item, item_types[index], f"{field_name}[{index}]", strict=strict, operation=operation)
             for index, item in enumerate(x)
         ]
-        return tuple(values) if isinstance(x, tuple) else values
+        result = tuple(values) if isinstance(x, tuple) else values
     elif origin is Callable2:
         if callable(x):
             try:
-                return dump_callable(x)
+                result = dump_callable(x)
             except TypeError as error:
                 raise TypeError(f"{field_name}: {error}") from error
-        raise TypeError(f"{field_name}: expected callable value for {field_type}, got {type(x)}")
+        else:
+            raise TypeError(f"{field_name}: expected callable value for {field_type}, got {type(x)}")
     elif origin in (int, float, str, bool):
         try:
-            return origin(x)
+            result = origin(x)
         except (TypeError, ValueError) as error:
             raise type(error)(f"{field_name}: {error}") from error
     elif not strict and is_value_of_type(x, field_type):
-        return x
+        result = x
     else:
         raise TypeError(f"{field_name}: {field_type} cannot encode value of type {type(x)}")
+    return result
 
 
 def to_dict_operation(

@@ -8,6 +8,10 @@
 - Phase 4: Complete
 - Phase 5: Complete
 - Phase 6: Complete
+- Follow-up 1: Complete
+- Follow-up 2: In progress
+- Follow-up 3: Pending
+- Follow-up 4: Pending
 
 Update each phase to `In progress`, `Complete`, or `Blocked` while executing
 this plan. Record the exact validation command and result beneath every
@@ -997,3 +1001,106 @@ comparison is reproducible.
   and uninlined.
 - `README.md`, `examples/kwargs_for.py`, and all focused and aggregate
   validation commands describe and verify the same final API.
+
+## Follow-up passes
+
+The follow-ups run in order because each pass reviews the accepted result of
+the prior pass. Each pass uses its own worker and reviewer loop and is committed
+separately. The production audit scope is limited to lines changed between the
+pre-implementation plan commit `d0703db` and the start of each follow-up.
+
+### Follow-up 1: Enforce repository code guidelines
+
+**Status:** Complete
+
+Audit only previously modified production lines against `AGENTS.md` and
+`CODE_GUIDELINES.md`. Apply clear, behavior-preserving fixes for documented
+rules, including direct control flow, public API structure, declaration order,
+naming, comments, and justified abstraction reuse. Do not restyle unchanged
+code, mass-format files, or force ambiguous interpretations. Tests may change
+only when a behavior-preserving refactor requires a call-site update.
+
+**Code pointers:** `msup/base.py`, `msup/cli.py`, and the changed-line boundary
+from `git diff d0703db..HEAD`.
+
+**Success criteria:** every clear guideline violation in the modified
+production lines is fixed; ambiguous cases are recorded rather than rewritten;
+behavior and the stable API remain unchanged; and aggregate validation passes.
+
+**Validation:** Run `./run.py test`, `./run.py examples`, `./run.py check`, and
+`git diff --check`.
+
+**Validation result:** `./run.py test` passed all 112 tests. `./run.py
+examples`, `./run.py check` (ty, Ruff lint, and Ruff format), and `git diff
+--check` passed. The audit changed only `msup/base.py`; no clear in-scope
+violation was found in `msup/cli.py`. Exception-driven union selection, deeper
+branch redesign, and broad docstring rewriting remain assigned to Follow-ups 2
+through 4.
+
+### Follow-up 2: Remove exceptions used as control flow
+
+**Status:** In progress
+
+Replace expected-outcome exception probing in previously modified production
+code with explicit conditionals or return values. Start with
+`msup/base.py:union_member`, where candidate selection currently probes union
+members by catching conversion errors. Preserve exceptions at invalid input,
+precondition, I/O, and external boundaries, and preserve qualified public error
+messages and strict or permissive conversion behavior.
+
+**Code pointers:** `msup/base.py:union_member`, `msup/base.py:from_dict_value`,
+`msup/base.py:to_dict_value`, and any directly related changed call sites.
+
+**Success criteria:** expected union or conversion route selection does not use
+exceptions for normal branching; remaining catches recover, add context, or
+translate at a real boundary; public behavior is unchanged; and aggregate
+validation passes.
+
+**Validation:** Run focused base conversion tests, then `./run.py test`,
+`./run.py examples`, `./run.py check`, and `git diff --check`.
+
+### Follow-up 3: Simplify complicated branches
+
+**Status:** Pending
+
+Analyze branch-heavy code in the previously modified production lines after
+Follow-up 2. Reduce complexity through direct control flow, stronger local
+invariants, and removal of redundant branches. Take out the largest coherent
+chunks first only when a helper has at least four same-meaning uses; do not
+introduce mode objects, callback walkers, builders, single-use helpers, or
+superficial line compression.
+
+**Code pointers:** branch-heavy functions in `msup/base.py` and `msup/cli.py`
+identified from the accepted Follow-up 2 implementation and the changed-line
+boundary from `d0703db`.
+
+**Success criteria:** complicated branches are materially easier to follow;
+the result follows the repository preference for branching and one final
+`result` return where values are assembled; no premature abstraction is added;
+behavior and public errors remain stable; and aggregate validation passes.
+
+**Validation:** Run focused tests for each changed branch family, then
+`./run.py test`, `./run.py examples`, `./run.py check`, and `git diff --check`.
+
+### Follow-up 4: Simplify docstrings
+
+**Status:** Pending
+
+Rewrite docstrings added or modified by this plan in simple language. Preserve
+the complete public behavior, constraints, return categories, errors, stable
+versus provisional distinction, operation-specific meanings, strict versus
+permissive behavior, conversion direction, and non-invocation guarantees.
+Keep forward declarations synchronized with implementation docstrings. Remove
+jargon when a familiar concrete phrase is equally precise.
+
+**Code pointers:** public docstrings changed since `d0703db` in `msup/base.py`
+and `msup/cli.py`, plus `README.md` only if a public contract phrase must stay
+consistent.
+
+**Success criteria:** changed public docstrings use plain language without
+losing contract details; forward and implementation declarations agree; no
+source-content or docstring-existence tests are added; and aggregate validation
+passes.
+
+**Validation:** Run `./run.py test`, `./run.py examples`, `./run.py check`, and
+`git diff --check`.
