@@ -192,6 +192,14 @@ class FieldSpec:
     kwargs_relation: "FieldSpec | None" = None
 
 
+@dataclass(frozen=True)
+class ConversionAttempt:
+    """Hold a converted value or the error that prevented conversion."""
+
+    value: Any = None
+    error: Exception | None = None
+
+
 def unwrap_annotated(annotation: Any) -> tuple[Any, list[Any]]:
     """Separate an Annotated base type from its ordered metadata values."""
 
@@ -493,8 +501,8 @@ def effective_type(annotation: Any, field_name: str) -> Any:
     return result
 
 
-def union_member(annotation: Any, concrete_type: type, field_name: str = "value") -> Any:
-    """Select the single best union member for a coercive source type."""
+def attempt_union_member(annotation: Any, concrete_type: type, field_name: str = "value") -> ConversionAttempt:
+    """Return a coercive union member or an error when selection is not unique."""
 
     candidates = []
     for member in get_args(annotation):
@@ -504,19 +512,18 @@ def union_member(annotation: Any, concrete_type: type, field_name: str = "value"
             origin = annotation_origin(member)
             concrete_origin = annotation_origin(concrete_type)
             if origin in (Union, UnionType):
-                try:
-                    union_member(member, concrete_type, field_name)
-                except TypeError:
-                    compatible = False
-                else:
-                    compatible = True
+                compatible = attempt_union_member(member, concrete_type, field_name).error is None
             elif member is Any:
                 compatible = True
             elif (enum_class := enum_type(member)) is not None:
-                validate_enum_values(enum_class, field_name)
-                compatible = concrete_origin is enum_class or any(
-                    type(enum_member.value) is concrete_origin for enum_member in enum_class
-                )
+                if any(type(enum_member.value) not in (str, int, float, bool) for enum_member in enum_class):
+                    return ConversionAttempt(
+                        error=TypeError(f"{field_name}: {enum_class.__name__} values must be str, int, float, or bool")
+                    )
+                else:
+                    compatible = concrete_origin is enum_class or any(
+                        type(enum_member.value) is concrete_origin for enum_member in enum_class
+                    )
             elif is_structured_model(member):
                 compatible = concrete_origin in (member, dict, str)
             elif origin is dict:
@@ -534,14 +541,27 @@ def union_member(annotation: Any, concrete_type: type, field_name: str = "value"
 
     exact = [member for member in candidates if annotation_origin(member) is concrete_type]
     if len(exact) == 1:
-        result = exact[0]
+        result = ConversionAttempt(exact[0])
     elif len(candidates) == 1:
-        result = candidates[0]
+        result = ConversionAttempt(candidates[0])
     elif not candidates:
-        raise TypeError(f"{field_name}: {annotation} cannot be converted from {concrete_type}")
+        result = ConversionAttempt(
+            error=TypeError(f"{field_name}: {annotation} cannot be converted from {concrete_type}")
+        )
     else:
-        raise TypeError(f"{field_name}: ambiguous conversion from {concrete_type} to {annotation}: {candidates}")
+        result = ConversionAttempt(
+            error=TypeError(f"{field_name}: ambiguous conversion from {concrete_type} to {annotation}: {candidates}")
+        )
     return result
+
+
+def union_member(annotation: Any, concrete_type: type, field_name: str = "value") -> Any:
+    """Select the single best union member for a coercive source type."""
+
+    attempt = attempt_union_member(annotation, concrete_type, field_name)
+    if attempt.error is not None:
+        raise attempt.error
+    return attempt.value
 
 
 def enum_type(annotation: Any) -> type[Enum] | None:
@@ -720,6 +740,197 @@ def dict_from_str(value: str) -> dict[Any, Any]:
     return result
 
 
+def attempt_from_dict_value(
+    x: Any,
+    field_type: Any,
+    field_name: str,
+    *,
+    strict: bool = False,
+    operation: Literal["dict", "json"] = "dict",
+) -> ConversionAttempt:
+    """Return a decoded value or the error that prevented conversion."""
+
+    field_type = normalize_annotation(field_type)
+    origin = annotation_origin(field_type)
+    concrete_type = type(x)
+    if strict and not is_annotation_supported(field_type, operation=operation):
+        return ConversionAttempt(
+            error=TypeError(f"{field_name}: {field_type} is not supported for {operation} conversion")
+        )
+    if x is None:
+        if is_optional(field_type) or field_type in (Any, type(None)):
+            result = ConversionAttempt(None)
+        else:
+            result = ConversionAttempt(error=TypeError(f"{field_name}: {field_type} cannot be converted from None"))
+    elif origin in (Union, UnionType):
+        if not strict:
+            member_attempt = attempt_union_member(field_type, concrete_type, field_name)
+            if member_attempt.error is not None:
+                result = member_attempt
+            else:
+                result = attempt_from_dict_value(x, member_attempt.value, field_name, operation=operation)
+        else:
+            attempts = [
+                attempt_from_dict_value(x, member, field_name, strict=True, operation=operation)
+                for member in get_args(field_type)
+            ]
+            matches = [attempt for attempt in attempts if attempt.error is None]
+            if len(matches) != 1:
+                detail = "no exact conversion" if not matches else "ambiguous exact conversion"
+                result = ConversionAttempt(
+                    error=TypeError(f"{field_name}: {detail} from {concrete_type} to {field_type}")
+                )
+            else:
+                result = matches[0]
+    elif (enum_class := enum_type(field_type)) is not None:
+        values = [member.value for member in enum_class]
+        if any(type(value) not in (str, int, float, bool) for value in values):
+            result = ConversionAttempt(
+                error=TypeError(f"{field_name}: {enum_class.__name__} values must be str, int, float, or bool")
+            )
+        elif isinstance(x, enum_class):
+            result = ConversionAttempt(x)
+        elif strict and not any(type(x) is type(value) and x == value for value in values):
+            result = ConversionAttempt(
+                error=TypeError(
+                    f"{field_name}: invalid exact {enum_class.__name__} value {x!r}; expected one of {values}"
+                )
+            )
+        else:
+            try:
+                result = ConversionAttempt(enum_class(x))
+            except ValueError as error:
+                converted_error = TypeError(
+                    f"{field_name}: invalid {enum_class.__name__} value {x!r}; expected one of {values}"
+                )
+                converted_error.__cause__ = error
+                result = ConversionAttempt(error=converted_error)
+    elif origin is Callable2:
+        if callable(x):
+            result = ConversionAttempt(x)
+        elif not isinstance(x, str):
+            result = ConversionAttempt(
+                error=TypeError(f"{field_name}: expected a callable or importable callable reference")
+            )
+        else:
+            try:
+                callable_value = load_callable(x)
+            except (AttributeError, ImportError, ValueError) as error:
+                converted_error = TypeError(f"{field_name}: {x!r} does not resolve to a callable")
+                converted_error.__cause__ = error
+                result = ConversionAttempt(error=converted_error)
+            else:
+                if not callable(callable_value):
+                    result = ConversionAttempt(error=TypeError(f"{field_name}: {x} does not resolve to a callable"))
+                else:
+                    try:
+                        canonical_name = dump_callable(callable_value) if strict else x
+                    except TypeError as error:
+                        result = ConversionAttempt(error=error)
+                    else:
+                        if canonical_name != x:
+                            result = ConversionAttempt(
+                                error=TypeError(
+                                    f"{field_name}: {x!r} is not the canonical reference {canonical_name!r}"
+                                )
+                            )
+                        else:
+                            result = ConversionAttempt(callable_value)
+    elif field_type is Any:
+        result = ConversionAttempt(x)
+    elif is_structured_model(field_type):
+        if isinstance(x, field_type):
+            result = ConversionAttempt(x)
+        else:
+            if isinstance(x, str) and not strict:
+                x = dict_from_str(x)
+            if isinstance(x, Mapping):
+                try:
+                    value = from_dict_operation(
+                        field_type, x, strict=strict, field_name=field_name, operation=operation
+                    )
+                except (AssertionError, AttributeError, ImportError, TypeError, ValueError) as error:
+                    result = ConversionAttempt(error=error)
+                else:
+                    result = ConversionAttempt(value)
+            else:
+                result = ConversionAttempt(
+                    error=TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
+                )
+    elif origin in (int, float, str, bool):
+        if strict and type(x) is not origin:
+            result = ConversionAttempt(
+                error=TypeError(f"{field_name}: expected exact {origin.__name__}, got {type(x).__name__}")
+            )
+        else:
+            try:
+                value = str_to_bool(x) if origin is bool and isinstance(x, str) else field_type(x)
+            except (TypeError, ValueError) as error:
+                result = ConversionAttempt(error=error)
+            else:
+                result = ConversionAttempt(value)
+    elif origin is dict:
+        raw = dict_from_str(x) if isinstance(x, str) and not strict else x
+        if not isinstance(raw, Mapping):
+            result = ConversionAttempt(error=TypeError(f"{field_name}: expected a mapping, got {type(raw)}"))
+        else:
+            key_type, value_type = get_collection_args(field_type)
+            values = {}
+            error = None
+            for key, value in raw.items():
+                key_attempt = attempt_from_dict_value(
+                    key, key_type, f"{field_name}.key", strict=strict, operation=operation
+                )
+                if key_attempt.error is not None:
+                    error = key_attempt.error
+                    break
+                else:
+                    value_attempt = attempt_from_dict_value(
+                        value, value_type, f"{field_name}.value", strict=strict, operation=operation
+                    )
+                    if value_attempt.error is not None:
+                        error = value_attempt.error
+                        break
+                    values[key_attempt.value] = value_attempt.value
+            result = ConversionAttempt(values, error)
+    elif origin in (list, tuple):
+        accepts = isinstance(x, list if strict and origin is list else (list, tuple))
+        if not accepts:
+            result = ConversionAttempt(
+                error=TypeError(f"{field_name}: {field_type} cannot be converted from {type(x)}")
+            )
+        else:
+            item_types = get_collection_args(field_type, len(x))
+            fixed_tuple = origin is tuple and len(get_args(field_type)) > 1 and get_args(field_type)[1] is not Ellipsis
+            if fixed_tuple and len(x) != len(item_types):
+                result = ConversionAttempt(
+                    error=TypeError(f"{field_name}: expected {len(item_types)} tuple values, got {len(x)}")
+                )
+            else:
+                values = []
+                error = None
+                for index, item in enumerate(x):
+                    attempt = attempt_from_dict_value(
+                        item,
+                        item_types[index] if index < len(item_types) else Any,
+                        f"{field_name}[{index}]",
+                        strict=strict,
+                        operation=operation,
+                    )
+                    if attempt.error is not None:
+                        error = attempt.error
+                        break
+                    values.append(attempt.value)
+                result = ConversionAttempt(origin(values), error)
+    elif not strict and is_value_of_type(x, field_type):
+        result = ConversionAttempt(x)
+    else:
+        result = ConversionAttempt(
+            error=TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
+        )
+    return result
+
+
 def from_dict_value(
     x: Any,
     field_type: Any,
@@ -737,111 +948,10 @@ def from_dict_value(
     fallback only for recursively type-correct Python values.
     """
 
-    field_type = normalize_annotation(field_type)
-    origin = annotation_origin(field_type)
-    concrete_type = type(x)
-    if strict and not is_annotation_supported(field_type, operation=operation):
-        raise TypeError(f"{field_name}: {field_type} is not supported for {operation} conversion")
-    if x is None:
-        if is_optional(field_type) or field_type in (Any, type(None)):
-            result = None
-        else:
-            raise TypeError(f"{field_name}: {field_type} cannot be converted from None")
-    elif origin in (Union, UnionType):
-        if not strict:
-            member = union_member(field_type, concrete_type, field_name)
-            result = from_dict_value(x, member, field_name, operation=operation)
-        else:
-            matches = []
-            for member in get_args(field_type):
-                try:
-                    matches.append(from_dict_value(x, member, field_name, strict=True, operation=operation))
-                except (AssertionError, AttributeError, ImportError, TypeError, ValueError):
-                    continue
-            if len(matches) != 1:
-                detail = "no exact conversion" if not matches else "ambiguous exact conversion"
-                raise TypeError(f"{field_name}: {detail} from {concrete_type} to {field_type}")
-            result = matches[0]
-    elif (enum_class := enum_type(field_type)) is not None:
-        validate_enum_values(enum_class, field_name)
-        if isinstance(x, enum_class):
-            result = x
-        else:
-            values = [member.value for member in enum_class]
-            if strict and not any(type(x) is type(value) and x == value for value in values):
-                raise TypeError(
-                    f"{field_name}: invalid exact {enum_class.__name__} value {x!r}; expected one of {values}"
-                )
-            try:
-                result = enum_class(x)
-            except ValueError as error:
-                raise TypeError(
-                    f"{field_name}: invalid {enum_class.__name__} value {x!r}; expected one of {values}"
-                ) from error
-    elif origin is Callable2:
-        if callable(x):
-            result = x
-        elif not isinstance(x, str):
-            raise TypeError(f"{field_name}: expected a callable or importable callable reference")
-        else:
-            try:
-                result = load_callable(x)
-            except (AttributeError, ImportError, ValueError) as error:
-                raise TypeError(f"{field_name}: {x!r} does not resolve to a callable") from error
-            if not callable(result):
-                raise TypeError(f"{field_name}: {x} does not resolve to a callable")
-            if strict and (canonical_name := dump_callable(result)) != x:
-                raise TypeError(f"{field_name}: {x!r} is not the canonical reference {canonical_name!r}")
-    elif field_type is Any:
-        result = x
-    elif is_structured_model(field_type):
-        if isinstance(x, field_type):
-            result = x
-        else:
-            if isinstance(x, str) and not strict:
-                x = dict_from_str(x)
-            if isinstance(x, Mapping):
-                result = from_dict_operation(field_type, x, strict=strict, field_name=field_name, operation=operation)
-            else:
-                raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
-    elif origin in (int, float, str, bool):
-        if strict and type(x) is not origin:
-            raise TypeError(f"{field_name}: expected exact {origin.__name__}, got {type(x).__name__}")
-        result = str_to_bool(x) if origin is bool and isinstance(x, str) else field_type(x)
-    elif origin is dict:
-        raw = dict_from_str(x) if isinstance(x, str) and not strict else x
-        if not isinstance(raw, Mapping):
-            raise TypeError(f"{field_name}: expected a mapping, got {type(raw)}")
-        key_type, value_type = get_collection_args(field_type)
-        result = {
-            from_dict_value(key, key_type, f"{field_name}.key", strict=strict, operation=operation): from_dict_value(
-                value, value_type, f"{field_name}.value", strict=strict, operation=operation
-            )
-            for key, value in raw.items()
-        }
-    elif origin in (list, tuple):
-        accepts = isinstance(x, list if strict and origin is list else (list, tuple))
-        if not accepts:
-            raise TypeError(f"{field_name}: {field_type} cannot be converted from {type(x)}")
-        item_types = get_collection_args(field_type, len(x))
-        if origin is tuple and len(get_args(field_type)) > 1 and get_args(field_type)[1] is not Ellipsis:
-            if len(x) != len(item_types):
-                raise TypeError(f"{field_name}: expected {len(item_types)} tuple values, got {len(x)}")
-        result = origin(
-            from_dict_value(
-                item,
-                item_types[index] if index < len(item_types) else Any,
-                f"{field_name}[{index}]",
-                strict=strict,
-                operation=operation,
-            )
-            for index, item in enumerate(x)
-        )
-    elif not strict and is_value_of_type(x, field_type):
-        result = x
-    else:
-        raise TypeError(f"{field_name}: {field_type} cannot be converted from {concrete_type}")
-    return result
+    attempt = attempt_from_dict_value(x, field_type, field_name, strict=strict, operation=operation)
+    if attempt.error is not None:
+        raise attempt.error
+    return attempt.value
 
 
 def to_dict_value(

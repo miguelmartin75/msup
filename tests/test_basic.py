@@ -925,6 +925,14 @@ class BasicTests(unittest.TestCase):
             effective_type(int | str, "value")
 
     def test_strict_encoded_values_use_exact_source_shapes(self):
+        @dataclass
+        class RequiredName:
+            name: str
+
+        @dataclass
+        class DefaultName:
+            name: str = "default"
+
         nested = Nested(1, 2)
         any_value = object()
         callable_reference = f"{__name__}.increment"
@@ -945,6 +953,7 @@ class BasicTests(unittest.TestCase):
             ((1, "two"), tuple[int, str], (1, "two")),
             (None, int | None, None),
             (1, int | str, 1),
+            ([1], list[int] | tuple[str, ...], [1]),
             (any_value, Any, any_value),
             (None, type(None), None),
         ]
@@ -981,6 +990,14 @@ class BasicTests(unittest.TestCase):
             from_dict_value({}, Any, "value", strict=True, operation="json")
         with self.assertRaisesRegex(TypeError, "not supported for json"):
             from_dict_value({1: 2}, dict[int, int], "value", strict=True, operation="json")
+        with self.assertRaisesRegex(TypeError, "ambiguous exact conversion"):
+            from_dict_value([1], list[int] | tuple[int, ...], "value", strict=True)
+        self.assertEqual(
+            from_dict_value({}, RequiredName | DefaultName, "value", strict=True),
+            DefaultName(),
+        )
+        with self.assertRaisesRegex(TypeError, "ambiguous exact conversion"):
+            from_dict_value({"name": "set"}, RequiredName | DefaultName, "value", strict=True)
 
     def test_permissive_list_decoding_accepts_tuple_carriers(self):
         self.assertEqual(from_dict_value(("1", 2), list[int], "values"), [1, 2])

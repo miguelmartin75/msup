@@ -9,8 +9,8 @@
 - Phase 5: Complete
 - Phase 6: Complete
 - Follow-up 1: Complete
-- Follow-up 2: In progress
-- Follow-up 3: Pending
+- Follow-up 2: Complete
+- Follow-up 3: In progress
 - Follow-up 4: Pending
 
 Update each phase to `In progress`, `Complete`, or `Blocked` while executing
@@ -225,12 +225,12 @@ a docstring. Their exact signatures remain implementation-facing and are not
 part of the compatibility promise until promoted. Keep the list current if
 execution adds, combines, or removes a declaration.
 
-- `msup.base`: `FieldSpec`, `unwrap_annotated`, `normalize_annotation`,
+- `msup.base`: `FieldSpec`, `ConversionAttempt`, `unwrap_annotated`, `normalize_annotation`,
   `metadata_from_annotations`, `is_pydantic_model`, `is_structured_model`,
   `has_default_value`, `materialize_default`, `fields_or_init_kwargs`,
   `contains_relation`, `maybe_idx`, `get_optional_type`, `get_collection_args`, `is_optional`,
-  `annotation_origin`, `effective_type`, `union_member`, `enum_type`,
-  `validate_enum_values`, `selected_target_fields`, `from_dict_value`,
+  `annotation_origin`, `effective_type`, `attempt_union_member`, `union_member`, `enum_type`,
+  `validate_enum_values`, `selected_target_fields`, `attempt_from_dict_value`, `from_dict_value`,
   `to_dict_value`, `from_dict_operation`, `to_dict_operation`, and
   `validate_selected_mapping`. The operation helpers are the shared owner
   traversals that preserve the stable wrapper signatures while carrying
@@ -1039,7 +1039,7 @@ through 4.
 
 ### Follow-up 2: Remove exceptions used as control flow
 
-**Status:** In progress
+**Status:** Complete
 
 Replace expected-outcome exception probing in previously modified production
 code with explicit conditionals or return values. Start with
@@ -1059,9 +1059,22 @@ validation passes.
 **Validation:** Run focused base conversion tests, then `./run.py test`,
 `./run.py examples`, `./run.py check`, and `git diff --check`.
 
+**Implementation discovery:** `ConversionAttempt` carries either a converted
+value or the boundary error that prevented conversion. Recursive
+`attempt_from_dict_value` and `attempt_union_member` use this result so normal
+union candidate selection does not catch conversion exceptions. The public
+wrappers retain their signatures and raise the stored error only at their API
+boundaries. Constructor, Pydantic validation, callable resolution, enum, and
+primitive conversion catches remain boundary translations.
+
+**Validation result:** Focused strict union and conversion tests passed with 3
+tests. The complete base and Pydantic suites passed all 56 tests. `./run.py
+test` passed all 112 tests. `./run.py examples`, `./run.py check` (ty, Ruff
+lint, and Ruff format), and `git diff --check` passed.
+
 ### Follow-up 3: Simplify complicated branches
 
-**Status:** Pending
+**Status:** In progress
 
 Analyze branch-heavy code in the previously modified production lines after
 Follow-up 2. Reduce complexity through direct control flow, stronger local
