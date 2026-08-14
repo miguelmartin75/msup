@@ -354,7 +354,7 @@ def fields_or_init_kwargs(target: type | Callable[..., Any], *, selected: bool =
                 raise TypeError(f"{name}: selected target parameters cannot use *args")
             elif selected and parameter.kind is parameter.VAR_KEYWORD:
                 raise TypeError(f"{name}: selected target parameters cannot use **kwargs")
-            if name in ("self", "cls") and (inspect.isclass(target) or not selected):
+            elif name in ("self", "cls") and (inspect.isclass(target) or not selected):
                 continue
             elif parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
                 continue
@@ -505,37 +505,39 @@ def attempt_union_member(annotation: Any, concrete_type: type, field_name: str =
     """Return a coercive union member or an error when selection is not unique."""
 
     candidates = []
+    concrete_origin = annotation_origin(concrete_type)
+    scalar_origins = (int, float, bool, str)
+    coercive_sources = {
+        dict: (dict, str),
+        list: (list, tuple),
+        tuple: (list, tuple),
+        Callable2: (str,),
+        type(None): (type(None),),
+        int: scalar_origins,
+        float: scalar_origins,
+        bool: scalar_origins,
+        str: scalar_origins,
+    }
     for member in get_args(annotation):
-        if member is type(None):
-            compatible = concrete_type is type(None)
-        else:
-            origin = annotation_origin(member)
-            concrete_origin = annotation_origin(concrete_type)
-            if origin in (Union, UnionType):
-                compatible = attempt_union_member(member, concrete_type, field_name).error is None
-            elif member is Any:
-                compatible = True
-            elif (enum_class := enum_type(member)) is not None:
-                if any(type(enum_member.value) not in (str, int, float, bool) for enum_member in enum_class):
-                    return ConversionAttempt(
-                        error=TypeError(f"{field_name}: {enum_class.__name__} values must be str, int, float, or bool")
-                    )
-                else:
-                    compatible = concrete_origin is enum_class or any(
-                        type(enum_member.value) is concrete_origin for enum_member in enum_class
-                    )
-            elif is_structured_model(member):
-                compatible = concrete_origin in (member, dict, str)
-            elif origin is dict:
-                compatible = concrete_origin in (dict, str)
-            elif origin in (list, tuple):
-                compatible = concrete_origin in (list, tuple)
-            elif origin is Callable2:
-                compatible = concrete_origin is str
-            elif origin in (int, float, bool, str) and concrete_origin in (int, float, bool, str):
-                compatible = True
+        origin = annotation_origin(member)
+        if origin in (Union, UnionType):
+            compatible = attempt_union_member(member, concrete_type, field_name).error is None
+        elif member is Any:
+            compatible = True
+        elif (enum_class := enum_type(member)) is not None:
+            if any(type(enum_member.value) not in (str, int, float, bool) for enum_member in enum_class):
+                return ConversionAttempt(
+                    error=TypeError(f"{field_name}: {enum_class.__name__} values must be str, int, float, or bool")
+                )
             else:
-                compatible = origin is concrete_origin
+                compatible = concrete_origin is enum_class or any(
+                    type(enum_member.value) is concrete_origin for enum_member in enum_class
+                )
+        else:
+            compatible_sources = (member, dict, str) if is_structured_model(member) else coercive_sources.get(origin)
+            compatible = (
+                concrete_origin in compatible_sources if compatible_sources is not None else origin is concrete_origin
+            )
         if compatible:
             candidates.append(member)
 
@@ -1124,6 +1126,7 @@ def to_kwargs(
     """Select a target's present top-level keyword-bindable values without conversion."""
 
     result: dict[str, Any] = {}
+    missing = object()
     owner_name = cast(Any, target).__qualname__
     if inspect.isclass(target):
         parameters = [(field.name, field.annotation) for field in fields_or_init_kwargs(target)]
@@ -1136,23 +1139,21 @@ def to_kwargs(
         ]
     for parameter_name, annotation in parameters:
         if isinstance(x, Mapping):
-            if parameter_name in x:
-                value = x[parameter_name]
-                result[parameter_name] = value
-            else:
+            if parameter_name not in x:
                 continue
-        elif hasattr(x, parameter_name):
-            value = getattr(x, parameter_name)
-            result[parameter_name] = value
+            value = x[parameter_name]
         else:
-            continue
+            value = getattr(x, parameter_name, missing)
+            if value is missing:
+                continue
         if strict:
             if annotation in (None, inspect.Parameter.empty) or not is_annotation_supported(
                 annotation, operation="type_check"
             ):
                 raise TypeError(f"{owner_name}.{parameter_name}: annotation is not supported for type_check")
-            if not is_value_of_type(value, annotation):
+            elif not is_value_of_type(value, annotation):
                 raise TypeError(f"{owner_name}.{parameter_name}: expected {annotation}, got {type(value)}")
+        result[parameter_name] = value
     return result
 
 

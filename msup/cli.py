@@ -280,12 +280,13 @@ def has_nested_source(clazz: type, args, config: dict, prefix: str) -> bool:
         annotation = f.annotation
         cli_arg = cliarg_from_annotations(f.annotations)
         config_value = config.get(f.name, MISSING)
+        field_type = effective_type(annotation, name)
         if config_value is not MISSING or (cli_arg and cli_arg.env and os.getenv(cli_arg.env) is not None):
             return True
         elif hasattr(args, name) or hasattr(args, f"{name}_pos"):
             return True
-        elif is_structured_model(effective_type(annotation, name)) and has_nested_source(
-            effective_type(annotation, name), args, config_value if isinstance(config_value, dict) else {}, name
+        elif is_structured_model(field_type) and has_nested_source(
+            field_type, args, config_value if isinstance(config_value, dict) else {}, name
         ):
             return True
     return False
@@ -404,6 +405,7 @@ def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None,
     pydantic_owner = is_pydantic_model(clazz)
     path = tuple(prefix.split(".")) if prefix else ()
     fields = fields_by_path[path] if fields_by_path is not None else fields_or_init_kwargs(clazz)
+    selector_names = {field.kwargs_relation.name for field in fields if field.kwargs_relation is not None}
     for f in fields:
         name = f"{prefix}.{f.name}" if prefix else f.name
         annotation = f.annotation
@@ -417,6 +419,11 @@ def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None,
             cli_value = getattr(args, f"{name}_pos")
         else:
             cli_value = MISSING
+        value = config_value
+        if env_value is not None:
+            value = env_value
+        if cli_value is not MISSING:
+            value = cli_value
 
         field_path = (*path, f.name)
         if field_path in targets:
@@ -437,11 +444,6 @@ def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None,
                     converted[parameter.name] = from_dict_value(value, parameter.annotation, f"{name}.{parameter.name}")
             construct_args[f.name] = converted
         elif is_structured_model(field_type):
-            value = config_value
-            if env_value is not None:
-                value = env_value
-            if cli_value is not MISSING:
-                value = cli_value
             if value is MISSING or value is None:
                 nested_config = {}
             elif isinstance(value, dict):
@@ -468,19 +470,14 @@ def from_cli_args(clazz, args, config=None, prefix="", cache=None, targets=None,
                 field_type, args, nested_config, name, cache, targets, fields_by_path
             )
         else:
-            value = config_value
-            if env_value is not None:
-                value = env_value
-            if cli_value is not MISSING:
-                value = cli_value
-            if field_path in cache and any(item.kwargs_relation is f for item in fields):
+            if field_path in cache and f.name in selector_names:
                 construct_args[f.name] = cache[field_path]
             elif value is not MISSING:
                 if pydantic_owner:
                     construct_args[f.name] = value
                 else:
                     construct_args[f.name] = from_dict_value(value, annotation, name)
-            elif (is_dataclass(clazz) or not is_structured_model(clazz)) and not has_default_value(f):
+            elif not pydantic_owner and not has_default_value(f):
                 error_exit(f"--{name} not provided (default value DNE)", 3)
     if pydantic_owner:
         values = deepcopy(config)

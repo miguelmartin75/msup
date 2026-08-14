@@ -1067,11 +1067,16 @@ class BasicTests(unittest.TestCase):
         self.assertEqual(relation_target_calls, 0)
 
     def test_regular_classes_keep_main_serialization_support(self):
+        class IndexedMapping(dict[str, Any]):
+            def get(self, key, default=None):
+                raise AssertionError("to_kwargs must use mapping membership and indexing")
+
         value = from_dict(BasicClass, {"name": "ok", "count": None})
         self.assertEqual(value.name, "ok")
         self.assertIsNone(value.count)
         self.assertEqual(to_dict(BasicClass("ok", 3)), {"name": "ok", "count": 3})
-        self.assertEqual(to_kwargs(BasicClass, {"name": "ok", "count": 3, "ignored": 1}), {"name": "ok", "count": 3})
+        source = IndexedMapping(name="ok", count=3, ignored=1)
+        self.assertEqual(to_kwargs(BasicClass, source), {"name": "ok", "count": 3})
 
     def test_regular_classes_ignore_variadic_constructor_parameters(self):
         value = from_dict(VarArgsClass, {"name": "ok", "values": [1], "options": {"color": "blue"}})

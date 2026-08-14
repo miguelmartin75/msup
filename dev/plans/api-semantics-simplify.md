@@ -10,8 +10,8 @@
 - Phase 6: Complete
 - Follow-up 1: Complete
 - Follow-up 2: Complete
-- Follow-up 3: In progress
-- Follow-up 4: Pending
+- Follow-up 3: Complete
+- Follow-up 4: In progress
 
 Update each phase to `In progress`, `Complete`, or `Blocked` while executing
 this plan. Record the exact validation command and result beneath every
@@ -1074,7 +1074,7 @@ lint, and Ruff format), and `git diff --check` passed.
 
 ### Follow-up 3: Simplify complicated branches
 
-**Status:** In progress
+**Status:** Complete
 
 Analyze branch-heavy code in the previously modified production lines after
 Follow-up 2. Reduce complexity through direct control flow, stronger local
@@ -1095,9 +1095,30 @@ behavior and public errors remain stable; and aggregate validation passes.
 **Validation:** Run focused tests for each changed branch family, then
 `./run.py test`, `./run.py examples`, `./run.py check`, and `git diff --check`.
 
+**Implementation discovery:** `attempt_union_member` now computes the concrete
+origin once and uses an explicit data table for the repeated coercive source
+families while keeping recursive unions, `Any`, enums, and exact matching
+direct. `from_cli_args` computes config, environment, and CLI precedence once
+per field, caches selector names, and reuses the Pydantic-owner decision.
+`to_kwargs` shares validation and assignment while preserving membership plus
+indexing for custom mappings. Broader dispatch functions remain intact because
+their branches implement distinct required behavior and extraction would add
+single-use helpers or a generalized walker.
+
+**Complexity result:** `attempt_union_member` decreased from Ruff McCabe 16 to
+10 and from 17 to 12 direct AST branch constructs. `from_cli_args` decreased
+from Ruff McCabe 28 to 26 and from 47 to 44 direct AST branch constructs. The
+CLI function decreased from 97 to 93 lines.
+
+**Validation result:** Focused base union, kwargs, selected-target, and custom
+mapping tests passed with 15 tests. Focused CLI source, precedence, selected,
+dynamic, nested, and direct tests passed with 29 tests. `./run.py test` passed
+all 112 tests. `./run.py examples`, `./run.py check` (ty, Ruff lint, and Ruff
+format), and `git diff --check` passed.
+
 ### Follow-up 4: Simplify docstrings
 
-**Status:** Pending
+**Status:** In progress
 
 Rewrite docstrings added or modified by this plan in simple language. Preserve
 the complete public behavior, constraints, return categories, errors, stable
